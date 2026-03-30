@@ -8,7 +8,7 @@ var UPLOAD_URL     = 'https://content.airtable.com/v0/' + AIRTABLE_BASE;
 /* ── 2. STATE ────────────────────────────────────────────────────────── */
 var state = {
   records:       null,        // null = not yet loaded
-  fieldIds:      undefined,   // undefined = not fetched; null = fetch failed; obj = success
+  fieldIds:      undefined,   // undefined = not fetched; null = failed; obj = success
   mapsCreated:   { home: false, detail: false },
   homeMap:       null,
   homeMarkers:   null,
@@ -43,7 +43,6 @@ async function fetchAllRecords() {
 }
 
 async function createRecord(fields) {
-  // Remove undefined values
   var clean = {};
   Object.keys(fields).forEach(function(k) {
     if (fields[k] !== undefined && fields[k] !== '') clean[k] = fields[k];
@@ -67,20 +66,134 @@ async function createRecord(fields) {
   return data.records[0];
 }
 
+async function deleteRecord(recordId) {
+  if (!confirm('Delete this find? This cannot be undone.')) return;
+  showLoading();
+  try {
+    var resp = await fetch(API_URL + '/' + recordId, {
+      method: 'DELETE',
+      headers: { 'Authorization': 'Bearer ' + AIRTABLE_TOKEN }
+    });
+    if (!resp.ok) throw new Error('Delete failed (' + resp.status + ')');
+    // Remove from local cache
+    if (state.records) {
+      state.records = state.records.filter(function(r) { return r.id !== recordId; });
+    }
+    hideLoading();
+    showToast('Find deleted');
+    navigate('#list');
+  } catch (e) {
+    hideLoading();
+    showToast(e.message || 'Delete failed — try again');
+  }
+}
+
+// Resolve the attachment field ID — content.airtable.com requires the real
+// field ID (fldXXXXXX), not the field name.
+// Method 1: Metadata API (needs schema.bases:read scope on token).
+// Method 2: Fetch recent records with returnFieldsByFieldId=true and identify
+//           the attachment field by its value structure (array of objects with url).
+async function fetchFieldIds() {
+  if (state.fieldIds !== undefined) return state.fieldIds;
+
+  // Method 1 — metadata API
+  try {
+    var resp = await fetch(
+      'https://api.airtable.com/v0/meta/bases/' + AIRTABLE_BASE + '/tables',
+      { headers: { 'Authorization': 'Bearer ' + AIRTABLE_TOKEN } }
+    );
+    if (resp.ok) {
+      var data = await resp.json();
+      var table = null;
+      for (var i = 0; i < data.tables.length; i++) {
+        if (data.tables[i].name === AIRTABLE_TABLE) { table = data.tables[i]; break; }
+      }
+      if (table) {
+        state.fieldIds = {};
+        table.fields.forEach(function(f) { state.fieldIds[f.name] = f.id; });
+        return state.fieldIds;
+      }
+    }
+  } catch (e) {}
+
+  // Method 2 — inspect record values to find attachment field ID
+  try {
+    var url2 = API_URL + '?maxRecords=10&returnFieldsByFieldId=true&sort[0][field]=Date&sort[0][direction]=desc';
+    var resp2 = await fetch(url2, { headers: { 'Authorization': 'Bearer ' + AIRTABLE_TOKEN } });
+    if (resp2.ok) {
+      var data2 = await resp2.json();
+      var records = data2.records || [];
+      var imageFieldId = null;
+      for (var j = 0; j < records.length && !imageFieldId; j++) {
+        var fieldKeys = Object.keys(records[j].fields);
+        for (var k = 0; k < fieldKeys.length; k++) {
+          var val = records[j].fields[fieldKeys[k]];
+          if (Array.isArray(val) && val.length > 0 && val[0] && typeof val[0].url === 'string') {
+            imageFieldId = fieldKeys[k];
+            break;
+          }
+        }
+      }
+      if (imageFieldId) {
+        state.fieldIds = { Image: imageFieldId };
+        return state.fieldIds;
+      }
+    }
+  } catch (e) {}
+
+  state.fieldIds = null;
+  return null;
+}
+
+// Compress an image file using Canvas to keep it well under Airtable's 5 MB limit.
+function compressImage(file) {
+  return new Promise(function(resolve) {
+    var img = new Image();
+    var objUrl = URL.createObjectURL(file);
+    img.onload = function() {
+      URL.revokeObjectURL(objUrl);
+      var MAX = 1600;
+      var w = img.naturalWidth, h = img.naturalHeight;
+      if (w > MAX || h > MAX) {
+        if (w > h) { h = Math.round(h * MAX / w); w = MAX; }
+        else       { w = Math.round(w * MAX / h); h = MAX; }
+      }
+      var canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+      canvas.toBlob(function(blob) {
+        resolve(new File([blob], file.name || 'photo.jpg', { type: 'image/jpeg' }));
+      }, 'image/jpeg', 0.85);
+    };
+    img.onerror = function() { resolve(file); }; // fallback: use original
+    img.src = objUrl;
+  });
+}
+
 async function uploadAttachment(recordId, fieldName, file) {
-  var url = UPLOAD_URL + '/' + recordId + '/' + encodeURIComponent(fieldName) + '/uploadAttachment';
+  // Compress before upload
+  var uploadFile = await compressImage(file);
+
+  // Get real field ID; fall back to field name if lookup fails
+  var fieldIds = await fetchFieldIds();
+  var fieldRef = (fieldIds && fieldIds[fieldName]) ? fieldIds[fieldName] : fieldName;
+
+  var url = UPLOAD_URL + '/' + recordId + '/' + fieldRef + '/uploadAttachment';
   var fd = new FormData();
-  fd.append('file', file, file.name || 'photo.jpg');
-  fd.append('filename', file.name || 'photo.jpg');
+  fd.append('file', uploadFile, uploadFile.name || 'photo.jpg');
+  // NOTE: do NOT set Content-Type — the browser sets multipart/form-data with boundary
 
   var resp = await fetch(url, {
     method: 'POST',
     headers: { 'Authorization': 'Bearer ' + AIRTABLE_TOKEN },
-    // NOTE: no Content-Type — browser sets multipart boundary automatically
     body: fd
   });
 
-  if (!resp.ok) throw new Error('Photo upload failed (' + resp.status + ')');
+  if (!resp.ok) {
+    var errText = await resp.text().catch(function() { return ''; });
+    throw new Error('Photo upload failed (' + resp.status + '): ' + errText);
+  }
   return resp.json();
 }
 
@@ -111,9 +224,8 @@ function activateView(name) {
   var view = document.getElementById('view-' + name);
   view.classList.add('active');
 
-  // Let Leaflet recalculate size after the element becomes visible
   requestAnimationFrame(function() {
-    if (name === 'home' && state.homeMap) state.homeMap.invalidateSize();
+    if (name === 'home'   && state.homeMap)   state.homeMap.invalidateSize();
     if (name === 'detail' && state.detailMap) state.detailMap.invalidateSize();
   });
 }
@@ -121,17 +233,17 @@ function activateView(name) {
 /* ── 5. HOME VIEW ────────────────────────────────────────────────────── */
 async function showHome() {
   var view = document.getElementById('view-home');
-  // Only build the shell once so the Leaflet map container persists across navigations
+  // Build shell once so the Leaflet map container survives navigations
   if (!document.getElementById('map-home')) {
     view.innerHTML =
       '<div class="app-banner">' +
-        '<span class="app-banner-ball">&#9918;</span>' +
+        '<span class="app-banner-icon">&#x26F3;</span>' +
         '<span class="app-banner-title">Mike\'s Balls</span>' +
       '</div>' +
       '<div class="stats-bar" id="stats-bar">' +
-        '<div class="stat-item"><div class="stat-value">—</div><div class="stat-label">Total</div></div>' +
-        '<div class="stat-item"><div class="stat-value">—</div><div class="stat-label">This Month</div></div>' +
-        '<div class="stat-item"><div class="stat-value">—</div><div class="stat-label">This Year</div></div>' +
+        '<div class="stat-item"><div class="stat-value">&#8212;</div><div class="stat-label">Total</div></div>' +
+        '<div class="stat-item"><div class="stat-value">&#8212;</div><div class="stat-label">This Month</div></div>' +
+        '<div class="stat-item"><div class="stat-value">&#8212;</div><div class="stat-label">This Year</div></div>' +
       '</div>' +
       '<div id="map-home"></div>' +
       '<nav class="bottom-nav">' +
@@ -161,7 +273,7 @@ function renderStats() {
   var records = state.records || [];
   var now = new Date();
   var yr  = now.getFullYear();
-  var mo  = now.getMonth(); // 0-based
+  var mo  = now.getMonth();
 
   var thisMonth = 0;
   var thisYear  = 0;
@@ -209,9 +321,7 @@ function initHomeMap() {
     if (lat == null || lng == null) return;
 
     var marker = L.marker([lat, lng], { icon: createBallIcon() });
-    marker.bindPopup(
-      '<b>' + escHtml(record.fields.Brand || 'Unknown') + '</b><br>' + formatDate(record.fields.Date)
-    );
+    marker.bindPopup('<b>' + escHtml(record.fields.Brand || 'Unknown') + '</b><br>' + formatDate(record.fields.Date));
     marker.on('click', (function(id) {
       return function() { navigate('#detail/' + id); };
     })(record.id));
@@ -243,7 +353,6 @@ function createBallIcon(isNew) {
 /* ── 6. LIST VIEW ────────────────────────────────────────────────────── */
 async function showList() {
   var view = document.getElementById('view-list');
-  // Only build the header shell once; always refresh list content below
   if (!document.getElementById('list-content')) {
     view.innerHTML =
       '<header class="view-header">' +
@@ -283,7 +392,7 @@ function renderList() {
 
     var thumbHtml = thumbUrl
       ? '<img class="ball-thumb" src="' + escHtml(thumbUrl) + '" alt="' + escHtml(fields.Brand || 'Ball') + '" loading="lazy">'
-      : '<div class="ball-thumb-placeholder">&#9918;</div>';
+      : '<div class="ball-thumb-placeholder">&#x26F3;</div>';
 
     return '<div class="ball-row" onclick="navigate(\'#detail/' + record.id + '\')">' +
       thumbHtml +
@@ -303,6 +412,7 @@ async function showDetail(recordId) {
     '<header class="view-header">' +
       '<button class="btn-back" onclick="navigate(\'#list\')" aria-label="Back">&#8592;</button>' +
       '<h1>Find Details</h1>' +
+      '<button class="btn-delete" onclick="deleteRecord(\'' + recordId + '\')" aria-label="Delete find">&#x1F5D1;</button>' +
     '</header>' +
     '<div id="map-detail"></div>' +
     '<div class="detail-scroll"><div id="detail-content"></div></div>';
@@ -335,7 +445,7 @@ function renderDetailMap(record) {
   var lat = record.fields.Lat;
   var lng = record.fields.Long;
 
-  // showDetail always rebuilds view.innerHTML, so always destroy and recreate the map
+  // Always destroy and recreate — showDetail always rebuilds the container
   if (state.detailMap) {
     state.detailMap.remove();
     state.detailMap = null;
@@ -380,9 +490,9 @@ function renderDetailContent(record) {
   document.getElementById('detail-content').innerHTML =
     '<div class="detail-meta">' +
       '<div class="meta-row"><span class="meta-key">Date</span><span>' + formatDate(fields.Date) + '</span></div>' +
-      '<div class="meta-row"><span class="meta-key">Brand</span><span>' + escHtml(fields.Brand || '—') + '</span></div>' +
+      '<div class="meta-row"><span class="meta-key">Brand</span><span>' + escHtml(fields.Brand || '&#8212;') + '</span></div>' +
       '<div class="meta-row"><span class="meta-key">Condition</span>' +
-        '<span class="condition-badge ' + condClass + '">' + escHtml(fields.Condition || '—') + '</span>' +
+        '<span class="condition-badge ' + condClass + '">' + escHtml(fields.Condition || '&#8212;') + '</span>' +
       '</div>' +
       (fields.Lat != null ? '<div class="meta-row"><span class="meta-key">Location</span><span style="font-family:monospace;font-size:12px">' + fields.Lat.toFixed(5) + ', ' + fields.Long.toFixed(5) + '</span></div>' : '') +
     '</div>' +
@@ -391,7 +501,6 @@ function renderDetailContent(record) {
 
 /* ── 8. LOG VIEW ─────────────────────────────────────────────────────── */
 function showLog() {
-  // Clean up any previous GPS watch
   if (state.gpsWatchId !== null) {
     navigator.geolocation.clearWatch(state.gpsWatchId);
     state.gpsWatchId = null;
@@ -407,13 +516,11 @@ function showLog() {
     '<div class="log-scroll">' +
     '<form class="log-form" id="log-form" onsubmit="submitLog(event)">' +
 
-    /* Step 1: GPS */
     '<div class="form-section">' +
       '<h2>Step 1 &middot; Location</h2>' +
       '<div class="gps-display" id="gps-display">Acquiring GPS&hellip;</div>' +
     '</div>' +
 
-    /* Step 2: Photos */
     '<div class="form-section">' +
       '<h2>Step 2 &middot; Photos</h2>' +
       '<div class="photo-inputs">' +
@@ -423,7 +530,6 @@ function showLog() {
       '</div>' +
     '</div>' +
 
-    /* Step 3: Details */
     '<div class="form-section">' +
       '<h2>Step 3 &middot; Details</h2>' +
       '<div class="form-field">' +
@@ -535,7 +641,6 @@ async function submitLog(event) {
   showLoading();
 
   try {
-    // Build fields, only include non-empty values
     var fields = {
       Date: new Date().toISOString().split('T')[0],
       Lat:  parseFloat(state.gpsCoords.lat),
@@ -547,21 +652,18 @@ async function submitLog(event) {
     var record = await createRecord(fields);
     var recordId = record.id;
 
-    // Upload photos one at a time
     var photoFiles = photos.filter(function(f) { return f !== null; });
     for (var i = 0; i < photoFiles.length; i++) {
       try {
         await uploadAttachment(recordId, 'Image', photoFiles[i]);
       } catch (uploadErr) {
         console.error('Photo upload failed:', uploadErr);
-        showToast('One photo failed to upload');
+        showToast('Photo ' + (i + 1) + ' failed: ' + uploadErr.message, 5000);
       }
     }
 
-    // Invalidate cache
     state.records = null;
 
-    // Stop GPS
     if (state.gpsWatchId !== null) {
       navigator.geolocation.clearWatch(state.gpsWatchId);
       state.gpsWatchId = null;
@@ -618,8 +720,7 @@ function closeLightbox() {
 }
 
 function formatDate(dateStr) {
-  if (!dateStr) return '—';
-  // Parse YYYY-MM-DD as UTC to avoid timezone off-by-one
+  if (!dateStr) return '&#8212;';
   var parts = dateStr.split('-');
   if (parts.length !== 3) return dateStr;
   var d = new Date(Date.UTC(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10)));

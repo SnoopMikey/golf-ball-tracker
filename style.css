@@ -95,6 +95,24 @@ input, select, textarea {
   background: rgba(255,255,255,0.2);
 }
 
+.btn-delete {
+  margin-left: auto;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(255,255,255,0.85);
+  font-size: 18px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  transition: background var(--transition);
+}
+
+.btn-delete:active {
+  background: rgba(220,0,0,0.35);
+}
+
 /* ── App banner ──────────────────────────────────────────────────────── */
 .app-banner {
   background: var(--green-dark);
