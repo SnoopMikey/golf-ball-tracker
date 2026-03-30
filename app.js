@@ -175,14 +175,22 @@ async function uploadAttachment(recordId, fieldName, file) {
   // Compress before upload
   var uploadFile = await compressImage(file);
 
-  // Get real field ID; fall back to field name if lookup fails
+  // Get real field ID; fall back to hardcoded known ID, then field name
   var fieldIds = await fetchFieldIds();
-  var fieldRef = (fieldIds && fieldIds[fieldName]) ? fieldIds[fieldName] : fieldName;
+  var KNOWN_FIELD_IDS = { Image: 'fldvFcQcom2ysqkFJ' };
+  var fieldRef = (fieldIds && fieldIds[fieldName])
+    ? fieldIds[fieldName]
+    : (KNOWN_FIELD_IDS[fieldName] || fieldName);
 
   var url = UPLOAD_URL + '/' + recordId + '/' + fieldRef + '/uploadAttachment';
+  var filename = uploadFile.name || 'photo.jpg';
+  var contentType = uploadFile.type || 'image/jpeg';
+
   var fd = new FormData();
-  fd.append('file', uploadFile, uploadFile.name || 'photo.jpg');
-  // NOTE: do NOT set Content-Type — the browser sets multipart/form-data with boundary
+  fd.append('file', uploadFile, filename);
+  fd.append('filename', filename);
+  fd.append('contentType', contentType);
+  // NOTE: do NOT set Content-Type header — browser sets multipart/form-data with boundary
 
   var resp = await fetch(url, {
     method: 'POST',
