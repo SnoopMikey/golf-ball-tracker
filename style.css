@@ -102,15 +102,16 @@ input, select, textarea {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: rgba(255,255,255,0.85);
-  font-size: 18px;
+  color: #fff;
+  font-size: 20px;
   border-radius: 50%;
   flex-shrink: 0;
   transition: background var(--transition);
+  text-shadow: 0 1px 3px rgba(0,0,0,0.4);
 }
 
 .btn-delete:active {
-  background: rgba(220,0,0,0.35);
+  background: rgba(220,0,0,0.45);
 }
 
 /* ── App banner ──────────────────────────────────────────────────────── */

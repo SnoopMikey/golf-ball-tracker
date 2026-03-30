@@ -171,31 +171,39 @@ function compressImage(file) {
   });
 }
 
-async function uploadAttachment(recordId, fieldName, file) {
-  // Compress before upload
-  var uploadFile = await compressImage(file);
+function fileToBase64(file) {
+  return new Promise(function(resolve, reject) {
+    var reader = new FileReader();
+    reader.onload = function() { resolve(reader.result.split(',')[1]); };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
 
-  // Get real field ID; fall back to hardcoded known ID, then field name
-  var fieldIds = await fetchFieldIds();
+async function uploadAttachment(recordId, fieldName, file) {
+  var uploadFile = await compressImage(file);
+  var b64 = await fileToBase64(uploadFile);
+
+  // Get real field ID; hardcoded fallback is from metadata API for this base
   var KNOWN_FIELD_IDS = { Image: 'fldvFcQcom2ysqkFJ' };
+  var fieldIds = await fetchFieldIds();
   var fieldRef = (fieldIds && fieldIds[fieldName])
     ? fieldIds[fieldName]
     : (KNOWN_FIELD_IDS[fieldName] || fieldName);
 
   var url = UPLOAD_URL + '/' + recordId + '/' + fieldRef + '/uploadAttachment';
-  var filename = uploadFile.name || 'photo.jpg';
-  var contentType = uploadFile.type || 'image/jpeg';
-
-  var fd = new FormData();
-  fd.append('file', uploadFile, filename);
-  fd.append('filename', filename);
-  fd.append('contentType', contentType);
-  // NOTE: do NOT set Content-Type header — browser sets multipart/form-data with boundary
 
   var resp = await fetch(url, {
     method: 'POST',
-    headers: { 'Authorization': 'Bearer ' + AIRTABLE_TOKEN },
-    body: fd
+    headers: {
+      'Authorization': 'Bearer ' + AIRTABLE_TOKEN,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      contentType: uploadFile.type || 'image/jpeg',
+      filename: uploadFile.name || 'photo.jpg',
+      file: b64
+    })
   });
 
   if (!resp.ok) {
@@ -649,8 +657,10 @@ async function submitLog(event) {
   showLoading();
 
   try {
+    var now = new Date();
     var fields = {
-      Date: new Date().toISOString().split('T')[0],
+      Date: now.toISOString().split('T')[0],
+      Time: now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }),
       Lat:  parseFloat(state.gpsCoords.lat),
       Long: parseFloat(state.gpsCoords.lng)
     };
