@@ -7,7 +7,8 @@ var UPLOAD_URL     = 'https://content.airtable.com/v0/' + AIRTABLE_BASE;
 
 /* ── 2. STATE ────────────────────────────────────────────────────────── */
 var state = {
-  records:       null,   // null = not yet loaded
+  records:       null,        // null = not yet loaded
+  fieldIds:      undefined,   // undefined = not fetched; null = fetch failed; obj = success
   mapsCreated:   { home: false, detail: false },
   homeMap:       null,
   homeMarkers:   null,
