@@ -119,18 +119,20 @@ function activateView(name) {
 /* ── 5. HOME VIEW ────────────────────────────────────────────────────── */
 async function showHome() {
   var view = document.getElementById('view-home');
-  view.innerHTML =
-    '<div class="stats-bar" id="stats-bar">' +
-      '<div class="stat-item"><div class="stat-value">—</div><div class="stat-label">Total</div></div>' +
-      '<div class="stat-item"><div class="stat-value">—</div><div class="stat-label">This Month</div></div>' +
-      '<div class="stat-item"><div class="stat-value">—</div><div class="stat-label">This Year</div></div>' +
-      '<div class="stat-item"><div class="stat-value" style="font-size:13px">—</div><div class="stat-label">Top Brand</div></div>' +
-    '</div>' +
-    '<div id="map-home"></div>' +
-    '<nav class="bottom-nav">' +
-      '<button class="btn-nav" onclick="navigate(\'#list\')"><span class="nav-icon">&#9776;</span>All Finds</button>' +
-      '<button class="btn-fab" onclick="navigate(\'#log\')" aria-label="Log a find">+</button>' +
-    '</nav>';
+  // Only build the shell once so the Leaflet map container persists across navigations
+  if (!document.getElementById('map-home')) {
+    view.innerHTML =
+      '<div class="stats-bar" id="stats-bar">' +
+        '<div class="stat-item"><div class="stat-value">—</div><div class="stat-label">Total</div></div>' +
+        '<div class="stat-item"><div class="stat-value">—</div><div class="stat-label">This Month</div></div>' +
+        '<div class="stat-item"><div class="stat-value">—</div><div class="stat-label">This Year</div></div>' +
+      '</div>' +
+      '<div id="map-home"></div>' +
+      '<nav class="bottom-nav">' +
+        '<button class="btn-nav" onclick="navigate(\'#list\')"><span class="nav-icon">&#9776;</span>All Finds</button>' +
+        '<button class="btn-fab" onclick="navigate(\'#log\')" aria-label="Log a find">+</button>' +
+      '</nav>';
+  }
 
   activateView('home');
 
@@ -157,7 +159,6 @@ function renderStats() {
 
   var thisMonth = 0;
   var thisYear  = 0;
-  var brandCount = {};
 
   records.forEach(function(r) {
     var d = r.fields.Date;
@@ -168,28 +169,14 @@ function renderStats() {
       if (ry === yr) thisYear++;
       if (ry === yr && rm === mo) thisMonth++;
     }
-    var brand = r.fields.Brand;
-    if (brand) {
-      brandCount[brand] = (brandCount[brand] || 0) + 1;
-    }
   });
-
-  var topBrand = '—';
-  var topCount = 0;
-  Object.keys(brandCount).forEach(function(b) {
-    if (brandCount[b] > topCount) { topCount = brandCount[b]; topBrand = b; }
-  });
-
-  // Truncate long brand names
-  if (topBrand.length > 9) topBrand = topBrand.slice(0, 8) + '…';
 
   var bar = document.getElementById('stats-bar');
   if (!bar) return;
   bar.innerHTML =
     '<div class="stat-item"><div class="stat-value">' + records.length + '</div><div class="stat-label">Total</div></div>' +
     '<div class="stat-item"><div class="stat-value">' + thisMonth + '</div><div class="stat-label">This Month</div></div>' +
-    '<div class="stat-item"><div class="stat-value">' + thisYear  + '</div><div class="stat-label">This Year</div></div>' +
-    '<div class="stat-item"><div class="stat-value" style="font-size:13px;line-height:1.3">' + topBrand + '</div><div class="stat-label">Top Brand</div></div>';
+    '<div class="stat-item"><div class="stat-value">' + thisYear  + '</div><div class="stat-label">This Year</div></div>';
 }
 
 function initHomeMap() {
@@ -250,12 +237,15 @@ function createBallIcon(isNew) {
 /* ── 6. LIST VIEW ────────────────────────────────────────────────────── */
 async function showList() {
   var view = document.getElementById('view-list');
-  view.innerHTML =
-    '<header class="view-header">' +
-      '<button class="btn-back" onclick="navigate(\'#home\')" aria-label="Back">&#8592;</button>' +
-      '<h1>All Finds</h1>' +
-    '</header>' +
-    '<div class="list-scroll" id="list-content"><div style="padding:40px;text-align:center"><div class="spinner" style="margin:auto"></div></div></div>';
+  // Only build the header shell once; always refresh list content below
+  if (!document.getElementById('list-content')) {
+    view.innerHTML =
+      '<header class="view-header">' +
+        '<button class="btn-back" onclick="navigate(\'#home\')" aria-label="Back">&#8592;</button>' +
+        '<h1>All Finds</h1>' +
+      '</header>' +
+      '<div class="list-scroll" id="list-content"></div>';
+  }
 
   activateView('list');
 
@@ -339,19 +329,17 @@ function renderDetailMap(record) {
   var lat = record.fields.Lat;
   var lng = record.fields.Long;
 
-  if (!state.mapsCreated.detail) {
-    state.detailMap = L.map('map-detail', { zoomControl: true });
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
-      maxZoom: 19
-    }).addTo(state.detailMap);
-    state.mapsCreated.detail = true;
+  // showDetail always rebuilds view.innerHTML, so always destroy and recreate the map
+  if (state.detailMap) {
+    state.detailMap.remove();
+    state.detailMap = null;
   }
 
-  // Remove existing markers
-  state.detailMap.eachLayer(function(layer) {
-    if (layer instanceof L.Marker) state.detailMap.removeLayer(layer);
-  });
+  state.detailMap = L.map('map-detail', { zoomControl: true });
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+    maxZoom: 19
+  }).addTo(state.detailMap);
 
   if (lat != null && lng != null) {
     state.detailMap.setView([lat, lng], 16);
@@ -544,8 +532,8 @@ async function submitLog(event) {
     // Build fields, only include non-empty values
     var fields = {
       Date: new Date().toISOString().split('T')[0],
-      Lat:  state.gpsCoords.lat,
-      Long: state.gpsCoords.lng
+      Lat:  parseFloat(state.gpsCoords.lat),
+      Long: parseFloat(state.gpsCoords.lng)
     };
     if (brand)     fields.Brand     = brand;
     if (condition) fields.Condition = condition;
