@@ -10,7 +10,7 @@
   --text-dark:    #1c1c1c;
   --shadow:       0 2px 8px rgba(0,0,0,0.15);
   --radius:       12px;
-  --nav-height:   64px;
+  --nav-height:   72px;
   --header-height:56px;
   --transition:   0.22s ease;
 }
@@ -95,6 +95,30 @@ input, select, textarea {
   background: rgba(255,255,255,0.2);
 }
 
+/* ── App banner ──────────────────────────────────────────────────────── */
+.app-banner {
+  background: var(--green-mid);
+  color: var(--white);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 7px 16px;
+  flex-shrink: 0;
+  border-bottom: 1px solid rgba(0,0,0,0.15);
+}
+
+.app-banner-ball {
+  font-size: 20px;
+  line-height: 1;
+}
+
+.app-banner-title {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+}
+
 /* ── Stats bar ───────────────────────────────────────────────────────── */
 .stats-bar {
   display: grid;
@@ -147,7 +171,7 @@ input, select, textarea {
   border-top: 1px solid #e0e0e0;
   display: flex;
   align-items: center;
-  justify-content: space-around;
+  justify-content: flex-start;
   flex-shrink: 0;
   position: relative;
   padding: 0 20px;
@@ -175,14 +199,15 @@ input, select, textarea {
 }
 
 .btn-fab {
-  width: 56px;
-  height: 56px;
+  width: 52px;
+  height: 52px;
   border-radius: 50%;
   background: var(--green-mid);
   color: var(--white);
   font-size: 28px;
   position: absolute;
-  top: -28px;
+  top: 50%;
+  transform: translateY(-50%);
   right: 20px;
   box-shadow: 0 4px 12px rgba(45,106,45,0.5);
   display: flex;
@@ -194,7 +219,7 @@ input, select, textarea {
 
 .btn-fab:active {
   background: var(--green-light);
-  transform: scale(0.95);
+  transform: translateY(-50%) scale(0.95);
 }
 
 /* ── List view ───────────────────────────────────────────────────────── */
@@ -245,19 +270,19 @@ input, select, textarea {
   min-width: 0;
 }
 
-.ball-brand {
+.ball-date {
   font-size: 15px;
   font-weight: 600;
   color: var(--text-dark);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .ball-meta {
   font-size: 13px;
   color: var(--gray-mid);
   margin-top: 3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .chevron {

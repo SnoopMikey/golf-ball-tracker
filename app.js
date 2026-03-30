@@ -74,8 +74,9 @@ async function uploadAttachment(recordId, fieldName, file) {
 
   var resp = await fetch(url, {
     method: 'POST',
-    headers: { 'Authorization': 'Bearer ' + AIRTABLE_TOKEN }
+    headers: { 'Authorization': 'Bearer ' + AIRTABLE_TOKEN },
     // NOTE: no Content-Type — browser sets multipart boundary automatically
+    body: fd
   });
 
   if (!resp.ok) throw new Error('Photo upload failed (' + resp.status + ')');
@@ -122,6 +123,10 @@ async function showHome() {
   // Only build the shell once so the Leaflet map container persists across navigations
   if (!document.getElementById('map-home')) {
     view.innerHTML =
+      '<div class="app-banner">' +
+        '<span class="app-banner-ball">&#9918;</span>' +
+        '<span class="app-banner-title">Mike\'s Balls</span>' +
+      '</div>' +
       '<div class="stats-bar" id="stats-bar">' +
         '<div class="stat-item"><div class="stat-value">—</div><div class="stat-label">Total</div></div>' +
         '<div class="stat-item"><div class="stat-value">—</div><div class="stat-label">This Month</div></div>' +
@@ -282,8 +287,8 @@ function renderList() {
     return '<div class="ball-row" onclick="navigate(\'#detail/' + record.id + '\')">' +
       thumbHtml +
       '<div class="ball-info">' +
-        '<div class="ball-brand">' + escHtml(fields.Brand || 'Unknown Brand') + '</div>' +
-        '<div class="ball-meta">' + formatDate(fields.Date) + (fields.Condition ? ' &middot; ' + escHtml(fields.Condition) : '') + '</div>' +
+        '<div class="ball-date">' + formatDate(fields.Date) + '</div>' +
+        '<div class="ball-meta">' + escHtml(fields.Brand || 'Unknown Brand') + (fields.Condition ? ' &middot; ' + escHtml(fields.Condition) : '') + '</div>' +
       '</div>' +
       '<span class="chevron">&#8250;</span>' +
     '</div>';
