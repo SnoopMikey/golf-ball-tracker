@@ -67,7 +67,7 @@ async function createRecord(fields) {
 }
 
 async function deleteRecord(recordId) {
-  if (!confirm('Delete this find? This cannot be undone.')) return;
+  if (!confirm('Strike this entry from the logbook? This cannot be undone.')) return;
   showLoading();
   try {
     var resp = await fetch(API_URL + '/' + recordId, {
@@ -80,7 +80,7 @@ async function deleteRecord(recordId) {
       state.records = state.records.filter(function(r) { return r.id !== recordId; });
     }
     hideLoading();
-    showToast('Find deleted');
+    showToast('Entry struck from the logbook.');
     navigate('#list');
   } catch (e) {
     hideLoading();
@@ -233,17 +233,79 @@ function navigate(hash) {
   window.location.hash = hash;
 }
 
-function activateView(name) {
-  document.querySelectorAll('.view').forEach(function(v) {
-    v.classList.remove('active');
-  });
-  var view = document.getElementById('view-' + name);
-  view.classList.add('active');
+var FLIP_MS = 500;
+var ROUTE_DEPTH = { home: 0, list: 1, detail: 2, log: 3 };
+var currentDepth = 0;
 
-  requestAnimationFrame(function() {
+function activateView(name) {
+  var newView = document.getElementById('view-' + name);
+  var current = document.querySelector('.view.active');
+  var newDepth = ROUTE_DEPTH[name] != null ? ROUTE_DEPTH[name] : 0;
+  var direction = (current && newDepth < currentDepth) ? 'back' : 'forward';
+  currentDepth = newDepth;
+
+  function refreshMaps() {
     if (name === 'home'   && state.homeMap)   state.homeMap.invalidateSize();
     if (name === 'detail' && state.detailMap) state.detailMap.invalidateSize();
-  });
+  }
+
+  // Re-activating the same view — no flip.
+  if (current === newView) {
+    requestAnimationFrame(refreshMaps);
+    return;
+  }
+
+  // First load (no prior view) — just appear.
+  if (!current) {
+    newView.classList.add('active');
+    requestAnimationFrame(refreshMaps);
+    setTimeout(refreshMaps, FLIP_MS + 60);
+    return;
+  }
+
+  // Brass spine glow runs in either direction
+  var app = document.getElementById('app');
+  if (app) {
+    app.classList.add('is-flipping');
+    setTimeout(function() { app.classList.remove('is-flipping'); }, FLIP_MS);
+  }
+
+  if (direction === 'forward') {
+    // Old lifts off the spine and rotates over the top; new is revealed underneath.
+    current.classList.remove('active');
+    current.classList.add('exiting');
+    var leaving = current;
+    setTimeout(function() {
+      leaving.style.transition = 'none';
+      leaving.classList.remove('exiting');
+      void leaving.offsetWidth;
+      leaving.style.transition = '';
+    }, FLIP_MS);
+
+    newView.classList.add('active');
+  } else {
+    // Back: new view comes up from where it was last "flipped to" — rotateY(-180)
+    // — and unfolds back to flat on top of the page being left behind. Old stays
+    // in place visible underneath until the flip lands.
+    newView.style.transition = 'none';
+    newView.style.transform = 'rotateY(-180deg)';
+    newView.classList.add('flipping-in');         // visibility + z-index 3
+    void newView.offsetWidth;                     // force reflow
+
+    newView.style.transition = '';
+    newView.style.transform = '';                 // CSS rotateY(0) takes over → animates
+    newView.classList.add('active');
+
+    var landing = newView;
+    var leavingBack = current;
+    setTimeout(function() {
+      leavingBack.classList.remove('active');     // old becomes invisible behind landed new
+      landing.classList.remove('flipping-in');    // back to z-index 2
+    }, FLIP_MS);
+  }
+
+  requestAnimationFrame(refreshMaps);
+  setTimeout(refreshMaps, FLIP_MS + 60);
 }
 
 /* ── 5. HOME VIEW ────────────────────────────────────────────────────── */
@@ -254,8 +316,10 @@ async function showHome() {
     view.innerHTML =
       '<div class="app-banner">' +
         '<button type="button" class="app-banner-title-btn" onclick="openSplash()" aria-label="Show splash image">' +
-          '<span class="app-banner-icon">&#x26F3;</span>' +
           '<span class="app-banner-title">Mike\'s Balls</span>' +
+          '<span class="app-banner-rule" aria-hidden="true">' +
+            '<span class="app-banner-ornament">&#10086;</span>' +
+          '</span>' +
         '</button>' +
       '</div>' +
       '<div class="stats-bar" id="stats-bar">' +
@@ -265,7 +329,10 @@ async function showHome() {
       '</div>' +
       '<div id="map-home"></div>' +
       '<nav class="bottom-nav">' +
-        '<button class="btn-nav" onclick="navigate(\'#list\')"><span class="nav-icon">&#9776;</span>All Finds</button>' +
+        '<button class="btn-nav" onclick="navigate(\'#list\')">' +
+          '<span class="btn-nav-text">The Logbook</span>' +
+          '<span class="btn-nav-arrow" aria-hidden="true">&#8250;</span>' +
+        '</button>' +
         '<button class="btn-fab" onclick="navigate(\'#log\')" aria-label="Log a find">+</button>' +
       '</nav>';
   }
@@ -339,7 +406,7 @@ function initHomeMap() {
     if (lat == null || lng == null) return;
 
     var marker = L.marker([lat, lng], { icon: createBallIcon() });
-    marker.bindPopup('<b>' + escHtml(record.fields.Brand || 'Unknown') + '</b><br>' + formatDate(record.fields.Date));
+    marker.bindPopup(buildPopupHtml(record));
     marker.on('click', (function(id) {
       return function() { navigate('#detail/' + id); };
     })(record.id));
@@ -362,10 +429,20 @@ function createBallIcon(isNew) {
   return L.divIcon({
     className: '',
     html: '<div class="ball-pin' + (isNew ? ' ball-pin-new' : '') + '"></div>',
-    iconSize: [24, 24],
-    iconAnchor: [12, 24],
-    popupAnchor: [0, -26]
+    iconSize: [26, 26],
+    iconAnchor: [13, 13],
+    popupAnchor: [0, -14]
   });
+}
+
+function buildPopupHtml(record) {
+  var f = record.fields;
+  return '<div class="popup-card">' +
+    '<div class="popup-eyebrow">Brand</div>' +
+    '<div class="popup-brand">' + escHtml(f.Brand || 'Unknown') + '</div>' +
+    '<div class="popup-rule"><span class="popup-rule-ornament">&#10086;</span></div>' +
+    '<div class="popup-date">' + formatDate(f.Date) + '</div>' +
+  '</div>';
 }
 
 /* ── 6. LIST VIEW ────────────────────────────────────────────────────── */
@@ -398,29 +475,49 @@ function renderList() {
   var records = state.records || [];
 
   if (records.length === 0) {
-    content.innerHTML = '<p class="empty-state">No finds yet — go log one!</p>';
+    content.innerHTML =
+      '<div class="empty-state">' +
+        '<div class="empty-state-headline">The logbook is empty.</div>' +
+        '<div class="empty-state-sub">Find a ball.</div>' +
+      '</div>';
     return;
   }
 
-  content.innerHTML = records.map(function(record) {
+  var total = records.length;
+
+  var rowsHtml = records.map(function(record, idx) {
     var fields = record.fields;
+    var findNo = total - idx;     // newest record gets highest number
+    var noStr  = String(findNo).padStart(3, '0');
+
     var thumbUrl = fields.Image && fields.Image[0] && fields.Image[0].thumbnails && fields.Image[0].thumbnails.small
       ? fields.Image[0].thumbnails.small.url
       : null;
 
     var thumbHtml = thumbUrl
       ? '<img class="ball-thumb" src="' + escHtml(thumbUrl) + '" alt="' + escHtml(fields.Brand || 'Ball') + '" loading="lazy">'
-      : '<div class="ball-thumb-placeholder">&#x26F3;</div>';
+      : '<div class="ball-thumb-placeholder"><span>&#8212;</span></div>';
+
+    var brand = fields.Brand || 'Unknown';
+    var condition = fields.Condition || '';
+    var metaHtml = escHtml(brand);
+    if (condition) {
+      metaHtml += ' <span class="ball-meta-sep">&middot;</span> ' +
+        '<span class="ball-meta-condition">' + escHtml(condition.toLowerCase()) + '</span>';
+    }
 
     return '<div class="ball-row" onclick="navigate(\'#detail/' + record.id + '\')">' +
       thumbHtml +
       '<div class="ball-info">' +
+        '<div class="ball-no">No. ' + noStr + '</div>' +
         '<div class="ball-date">' + formatDate(fields.Date) + '</div>' +
-        '<div class="ball-meta">' + escHtml(fields.Brand || 'Unknown Brand') + (fields.Condition ? ' &middot; ' + escHtml(fields.Condition) : '') + '</div>' +
+        '<div class="ball-meta">' + metaHtml + '</div>' +
       '</div>' +
       '<span class="chevron">&#8250;</span>' +
     '</div>';
   }).join('');
+
+  content.innerHTML = '<div class="register">' + rowsHtml + '</div>';
 }
 
 /* ── 7. DETAIL VIEW ──────────────────────────────────────────────────── */
@@ -429,10 +526,9 @@ async function showDetail(recordId) {
   view.innerHTML =
     '<header class="view-header">' +
       '<button class="btn-back" onclick="navigate(\'#list\')" aria-label="Back">&#8592;</button>' +
-      '<h1>Find Details</h1>' +
+      '<h1>Entry</h1>' +
       '<button class="btn-delete" onclick="deleteRecord(\'' + recordId + '\')" aria-label="Delete find">&#x1F5D1;</button>' +
     '</header>' +
-    '<div id="map-detail"></div>' +
     '<div class="detail-scroll"><div id="detail-content"></div></div>';
 
   activateView('detail');
@@ -445,18 +541,24 @@ async function showDetail(recordId) {
   }
 
   var record = null;
+  var recordIdx = -1;
   var records = state.records || [];
   for (var i = 0; i < records.length; i++) {
-    if (records[i].id === recordId) { record = records[i]; break; }
+    if (records[i].id === recordId) { record = records[i]; recordIdx = i; break; }
   }
 
   if (!record) {
-    document.getElementById('detail-content').innerHTML = '<p class="empty-state">Record not found.</p>';
+    document.getElementById('detail-content').innerHTML =
+      '<div class="empty-state">' +
+        '<div class="empty-state-headline">No such entry.</div>' +
+        '<div class="empty-state-sub">Return to logbook</div>' +
+      '</div>';
     return;
   }
 
+  var findNo = records.length - recordIdx;
+  renderDetailContent(record, findNo);
   renderDetailMap(record);
-  renderDetailContent(record);
 }
 
 function renderDetailMap(record) {
@@ -485,16 +587,41 @@ function renderDetailMap(record) {
   state.detailMap.invalidateSize();
 }
 
-function renderDetailContent(record) {
+function metaRow(key, valHtml) {
+  return '<div class="meta-row">' +
+    '<span class="meta-key">' + key + '</span>' +
+    '<span class="meta-leader" aria-hidden="true"></span>' +
+    '<span class="meta-val">' + valHtml + '</span>' +
+  '</div>';
+}
+
+function renderDetailContent(record, findNo) {
   var fields = record.fields;
-  var condClass = fields.Condition ? 'condition-' + fields.Condition.toLowerCase() : '';
+  var noStr = String(findNo).padStart(3, '0');
+
+  var rows = [];
+  rows.push(metaRow('Brand', escHtml(fields.Brand || '—')));
+  if (fields.Condition) {
+    var cls = 'condition-' + fields.Condition.toLowerCase();
+    rows.push(metaRow('Condition',
+      '<span class="condition-badge ' + cls + '">' + escHtml(fields.Condition.toLowerCase()) + '</span>'));
+  } else {
+    rows.push(metaRow('Condition', '—'));
+  }
+  if (fields.Lat != null) {
+    rows.push(metaRow('Coordinates',
+      '<span class="meta-coord">' + fields.Lat.toFixed(5) + ', ' + fields.Long.toFixed(5) + '</span>'));
+  }
+  if (fields.Time) {
+    rows.push(metaRow('Time', escHtml(fields.Time)));
+  }
 
   var photosHtml = '';
   if (fields.Image && fields.Image.length) {
     var urls = fields.Image.map(function(img) { return img.url; });
     window._detailPhotoUrls = urls;
     photosHtml =
-      '<div class="photo-strip-header">Photos (' + fields.Image.length + ')</div>' +
+      '<div class="section-label"><span>Photographs</span></div>' +
       '<div class="photo-strip">' +
       fields.Image.map(function(img, idx) {
         var thumb = img.thumbnails && img.thumbnails.large ? img.thumbnails.large.url : img.url;
@@ -504,18 +631,21 @@ function renderDetailContent(record) {
       }).join('') +
       '</div>';
   } else {
-    photosHtml = '<p class="no-photos">No photos for this find.</p>';
+    photosHtml =
+      '<div class="section-label"><span>Photographs</span></div>' +
+      '<p class="no-photos">No photographs on file.</p>';
   }
 
   document.getElementById('detail-content').innerHTML =
-    '<div class="detail-meta">' +
-      '<div class="meta-row"><span class="meta-key">Date</span><span>' + formatDate(fields.Date) + '</span></div>' +
-      '<div class="meta-row"><span class="meta-key">Brand</span><span>' + escHtml(fields.Brand || '&#8212;') + '</span></div>' +
-      '<div class="meta-row"><span class="meta-key">Condition</span>' +
-        '<span class="condition-badge ' + condClass + '">' + escHtml(fields.Condition || '&#8212;') + '</span>' +
-      '</div>' +
-      (fields.Lat != null ? '<div class="meta-row"><span class="meta-key">Location</span><span style="font-family:monospace;font-size:12px">' + fields.Lat.toFixed(5) + ', ' + fields.Long.toFixed(5) + '</span></div>' : '') +
+    '<div class="find-header">' +
+      '<div class="find-no-eyebrow">Find</div>' +
+      '<div class="find-no-number">No.&nbsp;' + noStr + '</div>' +
+      '<div class="find-no-date">' + formatDate(fields.Date) + '</div>' +
+      '<div class="find-no-rule"><span class="find-no-ornament">&#10086;</span></div>' +
     '</div>' +
+    '<div id="map-detail"></div>' +
+    '<div class="section-label"><span>Particulars</span></div>' +
+    '<div class="meta-list">' + rows.join('') + '</div>' +
     photosHtml;
 }
 
@@ -531,18 +661,18 @@ function showLog() {
   view.innerHTML =
     '<header class="view-header">' +
       '<button class="btn-back" onclick="abortLog()" aria-label="Back">&#8592;</button>' +
-      '<h1>Log a Find</h1>' +
+      '<h1>New Entry</h1>' +
     '</header>' +
     '<div class="log-scroll">' +
     '<form class="log-form" id="log-form" onsubmit="submitLog(event)">' +
 
+    '<div class="section-label"><span>I &middot; Location</span></div>' +
     '<div class="form-section">' +
-      '<h2>Step 1 &middot; Location</h2>' +
       '<div class="gps-display" id="gps-display">Acquiring GPS&hellip;</div>' +
     '</div>' +
 
+    '<div class="section-label"><span>II &middot; Photographs</span></div>' +
     '<div class="form-section">' +
-      '<h2>Step 2 &middot; Photos</h2>' +
       '<div class="photo-inputs">' +
         buildPhotoInput(0, 'Wide Shot') +
         buildPhotoInput(1, 'Close-Up') +
@@ -550,16 +680,16 @@ function showLog() {
       '</div>' +
     '</div>' +
 
+    '<div class="section-label"><span>III &middot; Particulars</span></div>' +
     '<div class="form-section">' +
-      '<h2>Step 3 &middot; Details</h2>' +
       '<div class="form-field">' +
         '<label for="brand">Brand</label>' +
-        '<input type="text" id="brand" placeholder="e.g. Titleist, Callaway" autocomplete="off">' +
+        '<input type="text" id="brand" placeholder="Titleist, Callaway, &hellip;" autocomplete="off">' +
       '</div>' +
       '<div class="form-field">' +
         '<label for="condition">Condition</label>' +
         '<select id="condition">' +
-          '<option value="">Select condition&hellip;</option>' +
+          '<option value="">Select &hellip;</option>' +
           '<option value="Mint">Mint</option>' +
           '<option value="Good">Good</option>' +
           '<option value="Fair">Fair</option>' +
@@ -568,7 +698,7 @@ function showLog() {
       '</div>' +
     '</div>' +
 
-    '<button type="submit" class="btn-submit" id="submit-btn">Save Find</button>' +
+    '<button type="submit" class="btn-submit" id="submit-btn">Record Entry</button>' +
     '</form></div>';
 
   activateView('log');
@@ -576,11 +706,12 @@ function showLog() {
 }
 
 function buildPhotoInput(index, label) {
+  var roman = ['I', 'II', 'III'][index] || (index + 1);
   return '<div>' +
     '<label class="photo-label" for="photo-' + index + '">' +
       '<div class="photo-preview-wrap" id="preview-wrap-' + index + '">' +
-        '<span class="camera-icon">&#128247;</span>' +
-        '<span>' + label + '</span>' +
+        '<span class="photo-roman">' + roman + '</span>' +
+        '<span class="photo-label-text">' + label + '</span>' +
       '</div>' +
     '</label>' +
     '<input type="file" id="photo-' + index + '" accept="image/*" capture="environment" ' +
@@ -636,7 +767,10 @@ function previewPhoto(input, index) {
   if (!input.files || !input.files[0]) return;
   var url = URL.createObjectURL(input.files[0]);
   var wrap = document.getElementById('preview-wrap-' + index);
-  if (wrap) wrap.innerHTML = '<img class="photo-preview" src="' + url + '" alt="Preview">';
+  if (wrap) {
+    wrap.innerHTML = '<img class="photo-preview" src="' + url + '" alt="Preview">';
+    wrap.classList.add('filled');
+  }
 }
 
 async function submitLog(event) {
@@ -656,7 +790,7 @@ async function submitLog(event) {
 
   var btn = document.getElementById('submit-btn');
   btn.disabled = true;
-  btn.textContent = 'Saving\u2026';
+  btn.textContent = 'Recording\u2026';
 
   showLoading();
 
@@ -692,13 +826,13 @@ async function submitLog(event) {
     }
 
     hideLoading();
-    showToast('Find logged!');
+    showToast('Entry recorded.');
     navigate('#home');
 
   } catch (err) {
     hideLoading();
     btn.disabled = false;
-    btn.textContent = 'Save Find';
+    btn.textContent = 'Record Entry';
     showToast(err.message || 'Failed to save — please try again');
   }
 }
