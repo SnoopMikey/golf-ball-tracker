@@ -381,6 +381,24 @@ async function submitAdminPassword() {
   }
 }
 
+/* ── 4b. ONE-TIME RATE PROMO ─────────────────────────────────────────── */
+function maybeShowRatePromo() {
+  if (localStorage.getItem('mb_promo_rate') === '1') return;
+  // Let the page settle before pitching anyone on judging balls
+  setTimeout(function() {
+    if (localStorage.getItem('mb_promo_rate') === '1') return;
+    document.getElementById('promo-modal').classList.remove('hidden');
+  }, 700);
+}
+
+function dismissRatePromo(goJudge) {
+  localStorage.setItem('mb_promo_rate', '1');
+  document.getElementById('promo-modal').classList.add('hidden');
+  if (goJudge && state.records && state.records.length) {
+    navigate('#detail/' + state.records[0].id);
+  }
+}
+
 /* ── 5. ROUTER ───────────────────────────────────────────────────────── */
 function router() {
   var hash = window.location.hash || '#home';
@@ -524,6 +542,7 @@ async function showHome() {
 
   renderStats();
   initHomeMap();
+  maybeShowRatePromo();
 }
 
 function renderStats() {
@@ -1709,10 +1728,12 @@ document.addEventListener('keydown', function(e) {
 
   var lightboxOpen = !document.getElementById('lightbox').classList.contains('hidden');
   var splashOpen = !document.getElementById('splash-overlay').classList.contains('hidden');
+  var promoOpen = !document.getElementById('promo-modal').classList.contains('hidden');
 
   if (e.key === 'Escape') {
     if (lightboxOpen) { closeLightbox(); e.preventDefault(); }
     else if (splashOpen) { closeSplash(); e.preventDefault(); }
+    else if (promoOpen) { dismissRatePromo(false); e.preventDefault(); }
     return;
   }
 
@@ -1798,6 +1819,14 @@ function escHtml(str) {
     if (e.target === splash) closeSplash();
   });
   document.getElementById('splash-close').addEventListener('click', closeSplash);
+})();
+
+(function initPromo() {
+  document.getElementById('promo-go').addEventListener('click', function() { dismissRatePromo(true); });
+  document.getElementById('promo-later').addEventListener('click', function() { dismissRatePromo(false); });
+  document.getElementById('promo-modal').addEventListener('click', function(e) {
+    if (e.target === e.currentTarget) dismissRatePromo(false);
+  });
 })();
 
 (function initAdmin() {
