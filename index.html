@@ -3,10 +3,11 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <meta name="theme-color" content="#2d6a2d">
+  <meta name="theme-color" content="#1f3a25">
+  <meta name="description" content="Tracking every golf ball Mike finds. Yes, it's exactly what it sounds like.">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <title>Golf Ball Tracker</title>
+  <title>Mike's Balls &#x26F3; Golf Ball Tracker</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -19,12 +20,15 @@
     <div id="view-list" class="view"></div>
     <div id="view-detail" class="view"></div>
     <div id="view-log" class="view"></div>
+    <div id="view-stats" class="view"></div>
   </div>
 
   <!-- Lightbox -->
   <div id="lightbox" class="hidden">
     <button id="lightbox-close" aria-label="Close">&#x2715;</button>
     <div id="lightbox-counter"></div>
+    <button id="lightbox-prev" class="lightbox-arrow hidden" aria-label="Previous photo">&#8249;</button>
+    <button id="lightbox-next" class="lightbox-arrow hidden" aria-label="Next photo">&#8250;</button>
     <div id="lightbox-track"></div>
   </div>
 
@@ -34,9 +38,23 @@
     <img id="splash-img" src="mikesballs-iphone.png" alt="Mike's Balls">
   </div>
 
+  <!-- Admin password modal -->
+  <div id="admin-modal" class="hidden">
+    <form class="admin-box" id="admin-form">
+      <h2>&#x1F510; Admin Access</h2>
+      <p>Prove you're Mike. Only Mike may touch these balls.</p>
+      <input type="password" id="admin-pass" placeholder="Password" autocomplete="off">
+      <div class="admin-actions">
+        <button type="button" id="admin-cancel" class="btn-admin-cancel">Cancel</button>
+        <button type="submit" id="admin-submit" class="btn-admin-submit">Unlock</button>
+      </div>
+    </form>
+  </div>
+
   <!-- Loading overlay -->
   <div id="loading-overlay" class="hidden" aria-label="Loading">
     <div class="spinner"></div>
+    <div id="loading-pun"></div>
   </div>
 
   <!-- Toast -->

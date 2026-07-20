@@ -2,19 +2,55 @@
 var AIRTABLE_TOKEN = 'patvUZhofHmUxBdGQ.de96f3bd149257e66c7995c7ee58c31f4eb390a3b51f5c8fcfb4792a44514f64';
 var AIRTABLE_BASE  = 'app3SuYCUnfvGghu5';
 var AIRTABLE_TABLE = 'Balls';
+var COMMENTS_TABLE = 'Comments';
 var API_URL        = 'https://api.airtable.com/v0/' + AIRTABLE_BASE + '/' + encodeURIComponent(AIRTABLE_TABLE);
+var COMMENTS_URL   = 'https://api.airtable.com/v0/' + AIRTABLE_BASE + '/' + encodeURIComponent(COMMENTS_TABLE);
 var UPLOAD_URL     = 'https://content.airtable.com/v0/' + AIRTABLE_BASE;
+
+// SHA-256 of the admin password. To change the password run in a browser
+// console:  crypto.subtle.digest('SHA-256', new TextEncoder().encode('newpass'))
+//             .then(h => console.log([...new Uint8Array(h)].map(b => b.toString(16).padStart(2,'0')).join('')))
+var ADMIN_HASH = 'affe69d75e6778ca751245a5e0705e5e29df0735d4947a4f0fa5b217eec669b0';
+
+var CONDITIONS = ['Mint', 'Great', 'Good', 'Fair', 'Worn', 'Destroyed'];
+
+var TAGLINES = [
+  'The internet’s finest collection of found balls.',
+  'Yes, they’re all his.',
+  'Every ball has a story.',
+  'Lost by them. Found by Mike.',
+  'Real balls. Really found.',
+  'Handled with care since day one.',
+  'You lose them, he finds them.',
+  'America’s most transparent ball collection.'
+];
+
+var LOADING_PUNS = [
+  'Polishing Mike’s balls…',
+  'Counting Mike’s balls…',
+  'Washing the balls…',
+  'Retrieving balls from the rough…',
+  'Fishing balls out of the pond…',
+  'Inspecting each ball by hand…',
+  'Arranging the balls just so…',
+  'Buffing out the scuff marks…',
+  'Herding dimples…',
+  'Asking the balls to smile…'
+];
 
 /* ── 2. STATE ────────────────────────────────────────────────────────── */
 var state = {
   records:       null,        // null = not yet loaded
+  comments:      null,        // null = not yet loaded
   fieldIds:      undefined,   // undefined = not fetched; null = failed; obj = success
   mapsCreated:   { home: false, detail: false },
   homeMap:       null,
   homeMarkers:   null,
   detailMap:     null,
   gpsCoords:     null,
-  gpsWatchId:    null
+  gpsWatchId:    null,
+  pendingRating: 0,
+  currentDetailId: null
 };
 
 /* ── 3. AIRTABLE API ─────────────────────────────────────────────────── */
@@ -42,6 +78,51 @@ async function fetchAllRecords() {
   return allRecords;
 }
 
+async function fetchAllComments() {
+  var all = [];
+  var offset = null;
+
+  do {
+    var url = COMMENTS_URL + '?pageSize=100';
+    if (offset) url += '&offset=' + encodeURIComponent(offset);
+
+    var resp = await fetch(url, {
+      headers: { 'Authorization': 'Bearer ' + AIRTABLE_TOKEN }
+    });
+    if (!resp.ok) throw new Error('Failed to load comments (' + resp.status + ')');
+
+    var data = await resp.json();
+    all = all.concat(data.records || []);
+    offset = data.offset || null;
+  } while (offset);
+
+  // Newest first — Created is an ISO string, so plain string sort works
+  all.sort(function(a, b) {
+    return (b.fields.Created || '').localeCompare(a.fields.Created || '');
+  });
+
+  state.comments = all;
+  return all;
+}
+
+async function ensureData(needComments) {
+  var jobs = [];
+  if (state.records === null) jobs.push(fetchAllRecords());
+  if (needComments && state.comments === null) {
+    jobs.push(fetchAllComments().catch(function() { state.comments = []; }));
+  }
+  if (jobs.length === 0) return;
+
+  showLoading();
+  try {
+    await Promise.all(jobs);
+  } catch (e) {
+    showToast(e.message || 'Failed to load data');
+  } finally {
+    hideLoading();
+  }
+}
+
 async function createRecord(fields) {
   var clean = {};
   Object.keys(fields).forEach(function(k) {
@@ -66,8 +147,31 @@ async function createRecord(fields) {
   return data.records[0];
 }
 
+async function createComment(fields) {
+  var resp = await fetch(COMMENTS_URL, {
+    method: 'POST',
+    headers: {
+      'Authorization': 'Bearer ' + AIRTABLE_TOKEN,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ records: [{ fields: fields }] })
+  });
+
+  if (!resp.ok) {
+    var err = await resp.json().catch(function() { return {}; });
+    throw new Error((err.error && err.error.message) || 'Failed to post (' + resp.status + ')');
+  }
+
+  var data = await resp.json();
+  return data.records[0];
+}
+
 async function deleteRecord(recordId) {
-  if (!confirm('Strike this entry from the logbook? This cannot be undone.')) return;
+  if (!isAdmin()) {
+    showToast('Only Mike can delete his balls.');
+    return;
+  }
+  if (!confirm('Delete this ball? Mike will never get it back.')) return;
   showLoading();
   try {
     var resp = await fetch(API_URL + '/' + recordId, {
@@ -80,7 +184,7 @@ async function deleteRecord(recordId) {
       state.records = state.records.filter(function(r) { return r.id !== recordId; });
     }
     hideLoading();
-    showToast('Entry struck from the logbook.');
+    showToast('Ball deleted. A moment of silence.');
     navigate('#list');
   } catch (e) {
     hideLoading();
@@ -213,7 +317,71 @@ async function uploadAttachment(recordId, fieldName, file) {
   return resp.json();
 }
 
-/* ── 4. ROUTER ───────────────────────────────────────────────────────── */
+/* ── 4. ADMIN MODE ───────────────────────────────────────────────────── */
+function isAdmin() {
+  return localStorage.getItem('mb_admin') === '1';
+}
+
+function applyAdminUI() {
+  document.body.classList.toggle('admin', isAdmin());
+  var lock = document.getElementById('btn-lock');
+  if (lock) {
+    lock.innerHTML = isAdmin() ? '&#x1F513;' : '&#x1F512;';
+    lock.title = isAdmin() ? 'Admin mode on — click to lock' : 'Admin sign-in';
+  }
+}
+
+function toggleAdmin() {
+  if (isAdmin()) {
+    localStorage.removeItem('mb_admin');
+    applyAdminUI();
+    showToast('View-only mode. Look, don’t touch.');
+  } else {
+    var modal = document.getElementById('admin-modal');
+    modal.classList.remove('hidden');
+    var input = document.getElementById('admin-pass');
+    input.value = '';
+    setTimeout(function() { input.focus(); }, 50);
+  }
+}
+
+function closeAdminModal() {
+  document.getElementById('admin-modal').classList.add('hidden');
+}
+
+function sha256Hex(str) {
+  var buf = new TextEncoder().encode(str);
+  return crypto.subtle.digest('SHA-256', buf).then(function(hash) {
+    return Array.prototype.map.call(new Uint8Array(hash), function(b) {
+      return ('0' + b.toString(16)).slice(-2);
+    }).join('');
+  });
+}
+
+async function submitAdminPassword() {
+  var input = document.getElementById('admin-pass');
+  var pass = input.value;
+  if (!pass) return;
+
+  if (!window.crypto || !crypto.subtle) {
+    showToast('Secure login unavailable in this browser.');
+    return;
+  }
+
+  var hash = await sha256Hex(pass);
+  if (hash === ADMIN_HASH) {
+    localStorage.setItem('mb_admin', '1');
+    closeAdminModal();
+    applyAdminUI();
+    showToast('Admin unlocked. Welcome back, Mike.');
+  } else {
+    input.value = '';
+    input.focus();
+    showToast('Nope. These are not your balls.');
+  }
+}
+
+/* ── 5. ROUTER ───────────────────────────────────────────────────────── */
 function router() {
   var hash = window.location.hash || '#home';
   var parts = hash.replace('#', '').split('/');
@@ -225,6 +393,7 @@ function router() {
     case 'list':   showList();         break;
     case 'detail': showDetail(param);  break;
     case 'log':    showLog();          break;
+    case 'stats':  showStats();        break;
     default:       window.location.hash = '#home';
   }
 }
@@ -234,7 +403,7 @@ function navigate(hash) {
 }
 
 var FLIP_MS = 500;
-var ROUTE_DEPTH = { home: 0, list: 1, detail: 2, log: 3 };
+var ROUTE_DEPTH = { home: 0, list: 1, stats: 1, detail: 2, log: 3 };
 var currentDepth = 0;
 
 function activateView(name) {
@@ -243,6 +412,8 @@ function activateView(name) {
   var newDepth = ROUTE_DEPTH[name] != null ? ROUTE_DEPTH[name] : 0;
   var direction = (current && newDepth < currentDepth) ? 'back' : 'forward';
   currentDepth = newDepth;
+
+  if (name !== 'detail') state.currentDetailId = null;
 
   function refreshMaps() {
     if (name === 'home'   && state.homeMap)   state.homeMap.invalidateSize();
@@ -308,7 +479,7 @@ function activateView(name) {
   setTimeout(refreshMaps, FLIP_MS + 60);
 }
 
-/* ── 5. HOME VIEW ────────────────────────────────────────────────────── */
+/* ── 6. HOME VIEW ────────────────────────────────────────────────────── */
 async function showHome() {
   var view = document.getElementById('view-home');
   // Build shell once so the Leaflet map container survives navigations
@@ -321,34 +492,35 @@ async function showHome() {
             '<span class="app-banner-ornament">&#10086;</span>' +
           '</span>' +
         '</button>' +
+        '<div class="app-banner-tagline" id="tagline"></div>' +
+        '<button class="btn-lock" id="btn-lock" onclick="toggleAdmin()" aria-label="Admin mode">&#x1F512;</button>' +
       '</div>' +
-      '<div class="stats-bar" id="stats-bar">' +
-        '<div class="stat-item"><div class="stat-value">&#8212;</div><div class="stat-label">Total</div></div>' +
+      '<div class="stats-bar" id="stats-bar" onclick="navigate(\'#stats\')" title="See full ball stats">' +
+        '<div class="stat-item"><div class="stat-value">&#8212;</div><div class="stat-label">Total Balls</div></div>' +
         '<div class="stat-item"><div class="stat-value">&#8212;</div><div class="stat-label">This Month</div></div>' +
         '<div class="stat-item"><div class="stat-value">&#8212;</div><div class="stat-label">This Year</div></div>' +
       '</div>' +
       '<div id="map-home"></div>' +
       '<nav class="bottom-nav">' +
         '<button class="btn-nav" onclick="navigate(\'#list\')">' +
-          '<span class="btn-nav-text">The Logbook</span>' +
+          '<span class="btn-nav-text">The Ball Sack</span>' +
+          '<span class="btn-nav-arrow" aria-hidden="true">&#8250;</span>' +
+        '</button>' +
+        '<button class="btn-nav" onclick="navigate(\'#stats\')">' +
+          '<span class="btn-nav-text">Ball Stats</span>' +
           '<span class="btn-nav-arrow" aria-hidden="true">&#8250;</span>' +
         '</button>' +
         '<button class="btn-fab" onclick="navigate(\'#log\')" aria-label="Log a find">+</button>' +
       '</nav>';
   }
 
+  var tagline = document.getElementById('tagline');
+  if (tagline) tagline.textContent = TAGLINES[Math.floor(Math.random() * TAGLINES.length)];
+  applyAdminUI();
+
   activateView('home');
 
-  if (state.records === null) {
-    showLoading();
-    try {
-      await fetchAllRecords();
-    } catch (e) {
-      showToast(e.message || 'Failed to load data');
-    } finally {
-      hideLoading();
-    }
-  }
+  await ensureData(false);
 
   renderStats();
   initHomeMap();
@@ -377,7 +549,7 @@ function renderStats() {
   var bar = document.getElementById('stats-bar');
   if (!bar) return;
   bar.innerHTML =
-    '<div class="stat-item"><div class="stat-value">' + records.length + '</div><div class="stat-label">Total</div></div>' +
+    '<div class="stat-item"><div class="stat-value">' + records.length + '</div><div class="stat-label">Total Balls</div></div>' +
     '<div class="stat-item"><div class="stat-value">' + thisMonth + '</div><div class="stat-label">This Month</div></div>' +
     '<div class="stat-item"><div class="stat-value">' + thisYear  + '</div><div class="stat-label">This Year</div></div>';
 }
@@ -414,15 +586,17 @@ function initHomeMap() {
     bounds.push([lat, lng]);
   });
 
-  if (bounds.length === 0) {
-    state.homeMap.setView([39.8283, -98.5795], 4);
-  } else if (bounds.length === 1) {
-    state.homeMap.setView(bounds[0], 14);
-  } else {
-    state.homeMap.fitBounds(bounds, { padding: [30, 30] });
-  }
-
+  // invalidateSize first, and fit without animation — an invalidateSize during
+  // the fit animation cancels it and strands the map at the wrong zoom
   state.homeMap.invalidateSize();
+
+  if (bounds.length === 0) {
+    state.homeMap.setView([39.8283, -98.5795], 4, { animate: false });
+  } else if (bounds.length === 1) {
+    state.homeMap.setView(bounds[0], 14, { animate: false });
+  } else {
+    state.homeMap.fitBounds(bounds, { padding: [30, 30], animate: false });
+  }
 }
 
 function createBallIcon(isNew) {
@@ -445,26 +619,21 @@ function buildPopupHtml(record) {
   '</div>';
 }
 
-/* ── 6. LIST VIEW ────────────────────────────────────────────────────── */
+/* ── 7. LIST VIEW ────────────────────────────────────────────────────── */
 async function showList() {
   var view = document.getElementById('view-list');
   if (!document.getElementById('list-content')) {
     view.innerHTML =
       '<header class="view-header">' +
         '<button class="btn-back" onclick="navigate(\'#home\')" aria-label="Back">&#8592;</button>' +
-        '<h1>All Finds</h1>' +
+        '<h1>The Ball Sack</h1>' +
       '</header>' +
       '<div class="list-scroll" id="list-content"></div>';
   }
 
   activateView('list');
 
-  if (state.records === null) {
-    showLoading();
-    try { await fetchAllRecords(); }
-    catch (e) { showToast(e.message || 'Failed to load data'); }
-    finally { hideLoading(); }
-  }
+  await ensureData(true);
 
   renderList();
 }
@@ -477,8 +646,8 @@ function renderList() {
   if (records.length === 0) {
     content.innerHTML =
       '<div class="empty-state">' +
-        '<div class="empty-state-headline">The logbook is empty.</div>' +
-        '<div class="empty-state-sub">Find a ball.</div>' +
+        '<div class="empty-state-headline">The sack is empty.</div>' +
+        '<div class="empty-state-sub">Mike needs to get out there.</div>' +
       '</div>';
     return;
   }
@@ -506,6 +675,12 @@ function renderList() {
         '<span class="ball-meta-condition">' + escHtml(condition.toLowerCase()) + '</span>';
     }
 
+    var rating = ballRating(record.id);
+    if (rating.count > 0) {
+      metaHtml += ' <span class="ball-meta-sep">&middot;</span> ' +
+        '<span class="row-rating">&#9733; ' + rating.avg.toFixed(1) + ' (' + rating.count + ')</span>';
+    }
+
     return '<div class="ball-row" onclick="navigate(\'#detail/' + record.id + '\')">' +
       thumbHtml +
       '<div class="ball-info">' +
@@ -520,7 +695,142 @@ function renderList() {
   content.innerHTML = '<div class="register">' + rowsHtml + '</div>';
 }
 
-/* ── 7. DETAIL VIEW ──────────────────────────────────────────────────── */
+/* ── 8. RATINGS & COMMENTS ───────────────────────────────────────────── */
+function ballComments(recordId) {
+  return (state.comments || []).filter(function(c) {
+    return c.fields.BallId === recordId;
+  });
+}
+
+function ballRating(recordId) {
+  var rated = ballComments(recordId).filter(function(c) { return c.fields.Rating > 0; });
+  if (rated.length === 0) return { avg: 0, count: 0 };
+  var sum = rated.reduce(function(s, c) { return s + c.fields.Rating; }, 0);
+  return { avg: sum / rated.length, count: rated.length };
+}
+
+function starsHtml(avg) {
+  var full = Math.round(avg);
+  var out = '';
+  for (var i = 1; i <= 5; i++) {
+    out += i <= full ? '&#9733;' : '&#9734;';
+  }
+  return out;
+}
+
+function setPendingRating(n) {
+  state.pendingRating = (state.pendingRating === n) ? 0 : n;
+  var btns = document.querySelectorAll('.star-btn');
+  btns.forEach(function(btn, i) {
+    btn.classList.toggle('active', i < state.pendingRating);
+  });
+}
+
+function renderRateSection(record) {
+  var comments = ballComments(record.id);
+  var rating = ballRating(record.id);
+  var savedName = localStorage.getItem('mb_name') || '';
+
+  var summaryHtml = rating.count > 0
+    ? '<span class="rate-avg-stars">' + starsHtml(rating.avg) + '</span>' +
+      '<span class="rate-avg-num">' + rating.avg.toFixed(1) + '</span>' +
+      '<span class="rate-avg-count">' + rating.count + ' rating' + (rating.count === 1 ? '' : 's') + '</span>'
+    : '<span class="rate-avg-none">No ratings yet &mdash; be the first to judge this ball.</span>';
+
+  var starButtons = '';
+  for (var i = 1; i <= 5; i++) {
+    starButtons += '<button type="button" class="star-btn' + (i <= state.pendingRating ? ' active' : '') + '" ' +
+      'onclick="setPendingRating(' + i + ')" aria-label="' + i + ' star' + (i === 1 ? '' : 's') + '">&#9733;</button>';
+  }
+
+  var commentsHtml = comments.length === 0
+    ? '<p class="no-comments">No comments yet. Surely you have feelings about this ball.</p>'
+    : comments.map(function(c) {
+        var f = c.fields;
+        return '<div class="comment-item">' +
+          '<div class="comment-head">' +
+            '<span class="comment-name">' + escHtml(f.Name || 'Anonymous') + '</span>' +
+            (f.Rating > 0 ? '<span class="comment-stars">' + starsHtml(f.Rating) + '</span>' : '') +
+            '<span class="comment-date">' + formatCommentDate(f.Created) + '</span>' +
+          '</div>' +
+          (f.Comment ? '<div class="comment-text">' + escHtml(f.Comment) + '</div>' : '') +
+        '</div>';
+      }).join('');
+
+  return '<div class="rate-section" id="rate-section">' +
+    '<div class="section-label"><span>Rate Mike\'s Ball</span></div>' +
+    '<div class="rate-summary">' + summaryHtml + '</div>' +
+    '<div class="star-input">' + starButtons + '</div>' +
+    '<p class="rate-sub">What are your thoughts on this ball?</p>' +
+    '<div class="rate-form">' +
+      '<input type="text" id="c-name" class="comment-name-input" placeholder="Your name (first is fine)" ' +
+        'value="' + escHtml(savedName) + '" autocomplete="off" maxlength="40">' +
+      '<textarea id="c-text" class="comment-text-input" rows="3" maxlength="500" ' +
+        'placeholder="Speak your mind. The ball can take it."></textarea>' +
+    '</div>' +
+    '<button type="button" class="btn-submit btn-comment" id="btn-comment" ' +
+      'onclick="submitBallComment(\'' + record.id + '\')">Post It</button>' +
+    '<div class="comments-list">' +
+      '<div class="section-label"><span>Ball Talk (' + comments.length + ')</span></div>' +
+      commentsHtml +
+    '</div>' +
+  '</div>';
+}
+
+async function submitBallComment(recordId) {
+  var nameEl = document.getElementById('c-name');
+  var textEl = document.getElementById('c-text');
+  var btn    = document.getElementById('btn-comment');
+
+  var name = nameEl.value.trim();
+  var text = textEl.value.trim();
+  var rating = state.pendingRating;
+
+  if (rating === 0 && !text) {
+    showToast('Give it some stars or some words — anything.');
+    return;
+  }
+
+  if (name) localStorage.setItem('mb_name', name);
+
+  btn.disabled = true;
+  btn.textContent = 'Posting…';
+
+  try {
+    var fields = {
+      BallId:  recordId,
+      Name:    name || 'Anonymous',
+      Created: new Date().toISOString()
+    };
+    if (text)       fields.Comment = text;
+    if (rating > 0) fields.Rating  = rating;
+
+    var created = await createComment(fields);
+
+    if (state.comments) state.comments.unshift(created);
+    state.pendingRating = 0;
+
+    var record = findRecord(recordId);
+    var section = document.getElementById('rate-section');
+    if (record && section) section.outerHTML = renderRateSection(record);
+
+    showToast('Opinion recorded. Mike thanks you.');
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = 'Post It';
+    showToast(e.message || 'Failed to post — try again');
+  }
+}
+
+/* ── 9. DETAIL VIEW ──────────────────────────────────────────────────── */
+function findRecord(recordId) {
+  var records = state.records || [];
+  for (var i = 0; i < records.length; i++) {
+    if (records[i].id === recordId) return records[i];
+  }
+  return null;
+}
+
 async function showDetail(recordId) {
   var view = document.getElementById('view-detail');
   view.innerHTML =
@@ -532,13 +842,11 @@ async function showDetail(recordId) {
     '<div class="detail-scroll"><div id="detail-content"></div></div>';
 
   activateView('detail');
+  state.currentDetailId = recordId;
+  state.pendingRating = 0;
 
-  if (state.records === null) {
-    showLoading();
-    try { await fetchAllRecords(); }
-    catch (e) { showToast(e.message || 'Failed to load data'); }
-    finally { hideLoading(); }
-  }
+  var commentsWereCached = state.comments !== null;
+  await ensureData(true);
 
   var record = null;
   var recordIdx = -1;
@@ -550,8 +858,8 @@ async function showDetail(recordId) {
   if (!record) {
     document.getElementById('detail-content').innerHTML =
       '<div class="empty-state">' +
-        '<div class="empty-state-headline">No such entry.</div>' +
-        '<div class="empty-state-sub">Return to logbook</div>' +
+        '<div class="empty-state-headline">Ball not found.</div>' +
+        '<div class="empty-state-sub">It rolled away.</div>' +
       '</div>';
     return;
   }
@@ -559,6 +867,19 @@ async function showDetail(recordId) {
   var findNo = records.length - recordIdx;
   renderDetailContent(record, findNo);
   renderDetailMap(record);
+
+  // Refresh comments in the background so visitors see each other's hot takes
+  // (only when showing a cached copy — a fresh fetch needs no refresh).
+  // Skip the re-render if they've started rating or typing — don't eat drafts.
+  if (!commentsWereCached) return;
+  fetchAllComments().then(function() {
+    if (state.currentDetailId !== record.id) return;
+    if (state.pendingRating > 0) return;
+    var textEl = document.getElementById('c-text');
+    if (textEl && textEl.value) return;
+    var section = document.getElementById('rate-section');
+    if (section) section.outerHTML = renderRateSection(record);
+  }).catch(function() {});
 }
 
 function renderDetailMap(record) {
@@ -602,9 +923,9 @@ function renderDetailContent(record, findNo) {
   var rows = [];
   rows.push(metaRow('Brand', escHtml(fields.Brand || '—')));
   if (fields.Condition) {
-    var cls = 'condition-' + fields.Condition.toLowerCase();
+    var cls = 'condition-' + fields.Condition.trim().toLowerCase();
     rows.push(metaRow('Condition',
-      '<span class="condition-badge ' + cls + '">' + escHtml(fields.Condition.toLowerCase()) + '</span>'));
+      '<span class="condition-badge ' + cls + '">' + escHtml(fields.Condition.trim().toLowerCase()) + '</span>'));
   } else {
     rows.push(metaRow('Condition', '—'));
   }
@@ -633,7 +954,7 @@ function renderDetailContent(record, findNo) {
   } else {
     photosHtml =
       '<div class="section-label"><span>Photographs</span></div>' +
-      '<p class="no-photos">No photographs on file.</p>';
+      '<p class="no-photos">No photos of this ball. Use your imagination.</p>';
   }
 
   document.getElementById('detail-content').innerHTML =
@@ -646,22 +967,34 @@ function renderDetailContent(record, findNo) {
     '<div id="map-detail"></div>' +
     '<div class="section-label"><span>Particulars</span></div>' +
     '<div class="meta-list">' + rows.join('') + '</div>' +
-    photosHtml;
+    photosHtml +
+    '<p class="kbd-hint">Tip: use the &#8592; &#8594; arrow keys to flip through Mike\'s balls, or through photos when one is open.</p>' +
+    renderRateSection(record);
 }
 
-/* ── 8. LOG VIEW ─────────────────────────────────────────────────────── */
+/* ── 10. LOG VIEW ────────────────────────────────────────────────────── */
 function showLog() {
+  if (!isAdmin()) {
+    showToast('Only Mike can log balls. Nice try.');
+    navigate('#home');
+    return;
+  }
+
   if (state.gpsWatchId !== null) {
     navigator.geolocation.clearWatch(state.gpsWatchId);
     state.gpsWatchId = null;
   }
   state.gpsCoords = null;
 
+  var conditionOptions = CONDITIONS.map(function(c) {
+    return '<option value="' + c + '">' + c + '</option>';
+  }).join('');
+
   var view = document.getElementById('view-log');
   view.innerHTML =
     '<header class="view-header">' +
       '<button class="btn-back" onclick="abortLog()" aria-label="Back">&#8592;</button>' +
-      '<h1>New Entry</h1>' +
+      '<h1>Bag a Ball</h1>' +
     '</header>' +
     '<div class="log-scroll">' +
     '<form class="log-form" id="log-form" onsubmit="submitLog(event)">' +
@@ -690,15 +1023,12 @@ function showLog() {
         '<label for="condition">Condition</label>' +
         '<select id="condition">' +
           '<option value="">Select &hellip;</option>' +
-          '<option value="Mint">Mint</option>' +
-          '<option value="Good">Good</option>' +
-          '<option value="Fair">Fair</option>' +
-          '<option value="Worn">Worn</option>' +
+          conditionOptions +
         '</select>' +
       '</div>' +
     '</div>' +
 
-    '<button type="submit" class="btn-submit" id="submit-btn">Record Entry</button>' +
+    '<button type="submit" class="btn-submit" id="submit-btn">Bag This Ball</button>' +
     '</form></div>';
 
   activateView('log');
@@ -790,7 +1120,7 @@ async function submitLog(event) {
 
   var btn = document.getElementById('submit-btn');
   btn.disabled = true;
-  btn.textContent = 'Recording\u2026';
+  btn.textContent = 'Recording…';
 
   showLoading();
 
@@ -826,22 +1156,269 @@ async function submitLog(event) {
     }
 
     hideLoading();
-    showToast('Entry recorded.');
+    showToast('Ball bagged! The collection grows.');
     navigate('#home');
 
   } catch (err) {
     hideLoading();
     btn.disabled = false;
-    btn.textContent = 'Record Entry';
+    btn.textContent = 'Bag This Ball';
     showToast(err.message || 'Failed to save — please try again');
   }
 }
 
-/* ── 9. UTILITIES ────────────────────────────────────────────────────── */
+/* ── 11. STATS VIEW ──────────────────────────────────────────────────── */
+async function showStats() {
+  var view = document.getElementById('view-stats');
+  view.innerHTML =
+    '<header class="view-header">' +
+      '<button class="btn-back" onclick="navigate(\'#home\')" aria-label="Back">&#8592;</button>' +
+      '<h1>Ball Stats</h1>' +
+    '</header>' +
+    '<div class="list-scroll" id="stats-content"></div>';
+
+  activateView('stats');
+
+  await ensureData(true);
+
+  renderStatsPage();
+}
+
+function renderStatsPage() {
+  var content = document.getElementById('stats-content');
+  if (!content) return;
+
+  var records  = state.records || [];
+  var comments = state.comments || [];
+
+  if (records.length === 0) {
+    content.innerHTML =
+      '<div class="empty-state">' +
+        '<div class="empty-state-headline">No balls, no stats.</div>' +
+        '<div class="empty-state-sub">It’s that simple.</div>' +
+      '</div>';
+    return;
+  }
+
+  var now = new Date();
+  var yr = now.getFullYear();
+  var mo = now.getMonth();
+
+  /* — basic counts — */
+  var thisMonth = 0, thisYear = 0;
+  var conditionCounts = {};
+  var brandCounts = {};   // lowercase key -> { name, count }
+  var dayCounts = [0, 0, 0, 0, 0, 0, 0];
+  var monthKeys = {};     // 'YYYY-MM' -> count
+  var latestDate = null;
+  var earliestYear = null;
+
+  records.forEach(function(r) {
+    var f = r.fields;
+    if (f.Date) {
+      var parts = f.Date.split('-');
+      var ry = parseInt(parts[0], 10);
+      var rm = parseInt(parts[1], 10) - 1;
+      if (ry === yr) thisYear++;
+      if (ry === yr && rm === mo) thisMonth++;
+      if (earliestYear === null || ry < earliestYear) earliestYear = ry;
+      if (latestDate === null || f.Date > latestDate) latestDate = f.Date;
+      monthKeys[f.Date.slice(0, 7)] = (monthKeys[f.Date.slice(0, 7)] || 0) + 1;
+      var d = new Date(Date.UTC(ry, rm, parseInt(parts[2], 10)));
+      dayCounts[d.getUTCDay()]++;
+    }
+    if (f.Condition) {
+      var c = f.Condition.trim();
+      conditionCounts[c] = (conditionCounts[c] || 0) + 1;
+    }
+    if (f.Brand) {
+      var key = f.Brand.trim().toLowerCase();
+      if (!brandCounts[key]) brandCounts[key] = { name: f.Brand.trim(), count: 0 };
+      brandCounts[key].count++;
+    }
+  });
+
+  /* — ratings — */
+  var allRatings = comments.filter(function(c) { return c.fields.Rating > 0; });
+  var overallAvg = allRatings.length
+    ? allRatings.reduce(function(s, c) { return s + c.fields.Rating; }, 0) / allRatings.length
+    : 0;
+
+  var perBall = {};  // BallId -> { sum, ratingCount, commentCount }
+  comments.forEach(function(c) {
+    var id = c.fields.BallId;
+    if (!id) return;
+    if (!perBall[id]) perBall[id] = { sum: 0, ratingCount: 0, commentCount: 0 };
+    perBall[id].commentCount++;
+    if (c.fields.Rating > 0) {
+      perBall[id].sum += c.fields.Rating;
+      perBall[id].ratingCount++;
+    }
+  });
+
+  var topRatedId = null, topRatedAvg = 0, topRatedCount = 0;
+  var mostDiscussedId = null, mostDiscussedCount = 0;
+  Object.keys(perBall).forEach(function(id) {
+    if (!findRecord(id)) return;  // comment on a deleted ball
+    var p = perBall[id];
+    if (p.ratingCount > 0) {
+      var avg = p.sum / p.ratingCount;
+      if (avg > topRatedAvg || (avg === topRatedAvg && p.ratingCount > topRatedCount)) {
+        topRatedId = id; topRatedAvg = avg; topRatedCount = p.ratingCount;
+      }
+    }
+    if (p.commentCount > mostDiscussedCount) {
+      mostDiscussedId = id; mostDiscussedCount = p.commentCount;
+    }
+  });
+
+  /* — days since last find — */
+  var daysSince = null;
+  if (latestDate) {
+    var lp = latestDate.split('-');
+    var lastUTC = Date.UTC(parseInt(lp[0], 10), parseInt(lp[1], 10) - 1, parseInt(lp[2], 10));
+    var todayUTC = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
+    daysSince = Math.max(0, Math.round((todayUTC - lastUTC) / 86400000));
+  }
+
+  /* — best day of week — */
+  var dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  var bestDay = 0;
+  for (var i = 1; i < 7; i++) { if (dayCounts[i] > dayCounts[bestDay]) bestDay = i; }
+
+  /* — hero grid — */
+  var heroHtml =
+    '<div class="stats-hero">' +
+      heroStat(records.length, 'Total Balls', 'and counting') +
+      heroStat(thisMonth, 'This Month', '') +
+      heroStat(thisYear, 'This Year', '') +
+      heroStat(Object.keys(brandCounts).length, 'Brands Collected', '') +
+      heroStat(allRatings.length ? ('&#9733; ' + overallAvg.toFixed(1)) : '&#8212;',
+               'Avg. Ball Rating', allRatings.length ? allRatings.length + ' vote' + (allRatings.length === 1 ? '' : 's') : 'no votes yet') +
+      heroStat(comments.length, 'Public Opinions', '') +
+      (daysSince !== null ? heroStat(daysSince, 'Days Since Last Ball', daysSince === 0 ? 'he’s on one today' : (daysSince > 13 ? 'concerning' : '')) : '') +
+      heroStat(dayCounts[bestDay] > 0 ? dayNames[bestDay] : '&#8212;', 'Prime Hunting Day', '') +
+    '</div>';
+
+  /* — condition bars — */
+  var knownConditions = CONDITIONS.filter(function(c) { return conditionCounts[c]; });
+  var otherConditions = Object.keys(conditionCounts).filter(function(c) { return CONDITIONS.indexOf(c) === -1; });
+  var orderedConditions = knownConditions.concat(otherConditions);
+  var maxCond = 1;
+  orderedConditions.forEach(function(c) { if (conditionCounts[c] > maxCond) maxCond = conditionCounts[c]; });
+
+  var conditionHtml = orderedConditions.length === 0
+    ? '<p class="no-comments">No conditions recorded yet.</p>'
+    : orderedConditions.map(function(c) {
+        var n = conditionCounts[c];
+        return barRow(c, n, n / maxCond * 100, 'bar-' + c.toLowerCase().replace(/[^a-z]/g, ''));
+      }).join('');
+
+  /* — brand leaderboard — */
+  var brands = Object.keys(brandCounts).map(function(k) { return brandCounts[k]; });
+  brands.sort(function(a, b) { return b.count - a.count; });
+  var topBrands = brands.slice(0, 8);
+  var maxBrand = topBrands.length ? topBrands[0].count : 1;
+
+  var brandHtml = topBrands.length === 0
+    ? '<p class="no-comments">No brands recorded yet.</p>'
+    : topBrands.map(function(b, idx) {
+        var label = (idx === 0 ? '&#127942; ' : '') + escHtml(b.name);
+        return barRow(label, b.count, b.count / maxBrand * 100, '', true);
+      }).join('');
+
+  /* — 12-month chart — */
+  var monthCols = '';
+  var maxMonth = 1;
+  var monthData = [];
+  for (var m = 11; m >= 0; m--) {
+    var d2 = new Date(yr, mo - m, 1);
+    var key = d2.getFullYear() + '-' + ('0' + (d2.getMonth() + 1)).slice(-2);
+    var count = monthKeys[key] || 0;
+    if (count > maxMonth) maxMonth = count;
+    monthData.push({ label: d2.toLocaleDateString('en-US', { month: 'short' }).charAt(0), full: d2.toLocaleDateString('en-US', { month: 'short', year: 'numeric' }), count: count });
+  }
+  monthData.forEach(function(md) {
+    monthCols +=
+      '<div class="month-col" title="' + md.full + ': ' + md.count + '">' +
+        '<span class="month-count">' + (md.count || '') + '</span>' +
+        '<div class="month-bar" style="height:' + Math.max(md.count / maxMonth * 100, md.count > 0 ? 6 : 2) + '%"></div>' +
+        '<span class="month-label">' + md.label + '</span>' +
+      '</div>';
+  });
+
+  /* — fan favorites — */
+  var favsHtml = '';
+  if (topRatedId) {
+    favsHtml += favCard(topRatedId, 'Top-Rated Ball',
+      starsHtml(topRatedAvg) + ' ' + topRatedAvg.toFixed(1) + ' (' + topRatedCount + ' vote' + (topRatedCount === 1 ? '' : 's') + ')');
+  }
+  if (mostDiscussedId) {
+    favsHtml += favCard(mostDiscussedId, 'Most Talked-About Ball',
+      mostDiscussedCount + ' comment' + (mostDiscussedCount === 1 ? '' : 's') + ' and climbing');
+  }
+  var favsSection = favsHtml
+    ? '<div class="section-label"><span>Fan Favorites</span></div>' +
+      '<div class="stats-body">' + favsHtml + '</div>'
+    : '';
+
+  content.innerHTML =
+    '<div class="stats-intro">The hard data on Mike’s balls.</div>' +
+    heroHtml +
+    '<div class="section-label"><span>Condition Report</span></div>' +
+    '<div class="stats-body">' + conditionHtml + '</div>' +
+    '<div class="section-label"><span>Brand Leaderboard</span></div>' +
+    '<div class="stats-body">' + brandHtml + '</div>' +
+    '<div class="section-label"><span>Monthly Ball Acquisition</span></div>' +
+    '<div class="stats-body"><div class="month-chart">' + monthCols + '</div></div>' +
+    favsSection +
+    '<p class="stats-footer">Mike’s Balls &mdash; every ball personally handled since ' + (earliestYear || yr) + '.<br>All balls verified authentic.</p>';
+}
+
+function heroStat(value, label, sub) {
+  return '<div class="hero-stat">' +
+    '<div class="hero-value">' + value + '</div>' +
+    '<div class="hero-label">' + label + '</div>' +
+    (sub ? '<div class="hero-sub">' + sub + '</div>' : '') +
+  '</div>';
+}
+
+function barRow(label, count, pct, colorClass, labelIsHtml) {
+  return '<div class="bar-row">' +
+    '<span class="bar-label">' + (labelIsHtml ? label : escHtml(label)) + '</span>' +
+    '<div class="bar-track"><div class="bar-fill ' + colorClass + '" style="width:' + Math.max(pct, 3) + '%"></div></div>' +
+    '<span class="bar-count">' + count + '</span>' +
+  '</div>';
+}
+
+function favCard(recordId, title, subtitle) {
+  var record = findRecord(recordId);
+  if (!record) return '';
+  var f = record.fields;
+  var thumbUrl = f.Image && f.Image[0] && f.Image[0].thumbnails && f.Image[0].thumbnails.small
+    ? f.Image[0].thumbnails.small.url : null;
+  var thumbHtml = thumbUrl
+    ? '<img class="ball-thumb" src="' + escHtml(thumbUrl) + '" alt="Ball">'
+    : '<div class="ball-thumb-placeholder"><span>&#8212;</span></div>';
+
+  return '<div class="fav-card" onclick="navigate(\'#detail/' + recordId + '\')">' +
+    thumbHtml +
+    '<div class="fav-info">' +
+      '<div class="fav-title">' + title + '</div>' +
+      '<div class="fav-name">' + escHtml(f.Brand || 'Unknown Brand') + ' &middot; ' + formatDate(f.Date) + '</div>' +
+      '<div class="fav-sub">' + subtitle + '</div>' +
+    '</div>' +
+    '<span class="chevron">&#8250;</span>' +
+  '</div>';
+}
+
+/* ── 12. UTILITIES ───────────────────────────────────────────────────── */
 var loadingCount = 0;
 
 function showLoading() {
   loadingCount++;
+  var pun = document.getElementById('loading-pun');
+  if (pun) pun.textContent = LOADING_PUNS[Math.floor(Math.random() * LOADING_PUNS.length)];
   document.getElementById('loading-overlay').classList.remove('hidden');
 }
 
@@ -907,12 +1484,29 @@ function closeLightbox() {
 function updateCounter() {
   var el = document.getElementById('lightbox-counter');
   if (!el) return;
-  if (lb.urls.length > 1) {
+  var multi = lb.urls.length > 1;
+  if (multi) {
     el.textContent = (lb.index + 1) + ' / ' + lb.urls.length;
     el.style.display = '';
   } else {
     el.style.display = 'none';
   }
+  // Desktop arrows travel with the counter's visibility
+  var prev = document.getElementById('lightbox-prev');
+  var next = document.getElementById('lightbox-next');
+  if (prev) prev.classList.toggle('hidden', !multi);
+  if (next) next.classList.toggle('hidden', !multi);
+}
+
+function lbStep(dir) {
+  if (lb.urls.length < 2) return;
+  var next = lb.index + dir;
+  if (next < 0 || next >= lb.urls.length) return;
+  lb.index = next;
+  lb.scale = 1; lb.tx = 0; lb.ty = 0;
+  updateCounter();
+  positionTrack(true);
+  applyImgTransform(true);
 }
 
 function positionTrack(animate) {
@@ -1107,12 +1701,61 @@ function closeSplash() {
   document.getElementById('splash-overlay').classList.add('hidden');
 }
 
+/* ── 13. KEYBOARD NAVIGATION ─────────────────────────────────────────── */
+document.addEventListener('keydown', function(e) {
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  var tag = (e.target && e.target.tagName) || '';
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+
+  var lightboxOpen = !document.getElementById('lightbox').classList.contains('hidden');
+  var splashOpen = !document.getElementById('splash-overlay').classList.contains('hidden');
+
+  if (e.key === 'Escape') {
+    if (lightboxOpen) { closeLightbox(); e.preventDefault(); }
+    else if (splashOpen) { closeSplash(); e.preventDefault(); }
+    return;
+  }
+
+  if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+  var dir = (e.key === 'ArrowRight') ? 1 : -1;
+
+  // In the lightbox: flip through this ball's photos
+  if (lightboxOpen) {
+    lbStep(dir);
+    e.preventDefault();
+    return;
+  }
+
+  // On a ball detail page: flip through Mike's balls
+  var detailActive = document.getElementById('view-detail').classList.contains('active');
+  if (detailActive && state.currentDetailId && state.records) {
+    var idx = -1;
+    for (var i = 0; i < state.records.length; i++) {
+      if (state.records[i].id === state.currentDetailId) { idx = i; break; }
+    }
+    var next = idx + dir;
+    if (idx !== -1 && next >= 0 && next < state.records.length) {
+      navigate('#detail/' + state.records[next].id);
+    }
+    e.preventDefault();
+  }
+});
+
+/* ── 14. FORMAT HELPERS ──────────────────────────────────────────────── */
 function formatDate(dateStr) {
   if (!dateStr) return '&#8212;';
   var parts = dateStr.split('-');
   if (parts.length !== 3) return dateStr;
   var d = new Date(Date.UTC(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10)));
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
+}
+
+// Comment timestamps are full ISO strings (UTC) — render in the viewer's local time
+function formatCommentDate(isoStr) {
+  if (!isoStr) return '';
+  var d = new Date(isoStr);
+  if (isNaN(d.getTime())) return '';
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
 function escHtml(str) {
@@ -1125,12 +1768,14 @@ function escHtml(str) {
     .replace(/'/g, '&#39;');
 }
 
-/* ── 10. INIT ────────────────────────────────────────────────────────── */
+/* ── 15. INIT ────────────────────────────────────────────────────────── */
 (function initLightbox() {
   var box = document.getElementById('lightbox');
   var track = document.getElementById('lightbox-track');
 
   document.getElementById('lightbox-close').addEventListener('click', closeLightbox);
+  document.getElementById('lightbox-prev').addEventListener('click', function() { lbStep(-1); });
+  document.getElementById('lightbox-next').addEventListener('click', function() { lbStep(1); });
 
   track.addEventListener('touchstart', lbTouchStart, { passive: false });
   track.addEventListener('touchmove',  lbTouchMove,  { passive: false });
@@ -1155,9 +1800,21 @@ function escHtml(str) {
   document.getElementById('splash-close').addEventListener('click', closeSplash);
 })();
 
+(function initAdmin() {
+  document.getElementById('admin-cancel').addEventListener('click', closeAdminModal);
+  document.getElementById('admin-form').addEventListener('submit', function(e) {
+    e.preventDefault();
+    submitAdminPassword();
+  });
+  document.getElementById('admin-modal').addEventListener('click', function(e) {
+    if (e.target === e.currentTarget) closeAdminModal();
+  });
+})();
+
 window.addEventListener('hashchange', router);
 
 window.addEventListener('DOMContentLoaded', function() {
+  applyAdminUI();
   if (!window.location.hash || window.location.hash === '#') {
     window.location.hash = '#home';
   } else {
