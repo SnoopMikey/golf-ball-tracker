@@ -676,6 +676,27 @@ function buildPopupHtml(record) {
   '</div>';
 }
 
+/* ── 6b. POSTER PHOTO ────────────────────────────────────────────────── */
+// The money shot is the ball in hand, but the two capture flows ordered their
+// photos differently: this site uploads Wide Shot, Close-Up, In Hand — hand
+// last — while the older iOS-logged entries (the ones carrying a full ISO
+// timestamp in Date rather than a plain date) shot the hand first.
+function posterPhoto(fields) {
+  var imgs = fields.Image;
+  if (!imgs || !imgs.length) return null;
+  var loggedHere = (fields.Date || '').indexOf('T') === -1;
+  return (loggedHere && imgs.length >= 3) ? imgs[2] : imgs[0];
+}
+
+// Airtable's "small" thumbnail is only 27px wide — far too soft for a 64px
+// row thumb on a retina screen, so prefer the large one.
+function posterThumbUrl(fields) {
+  var img = posterPhoto(fields);
+  if (!img) return null;
+  var t = img.thumbnails || {};
+  return (t.large && t.large.url) || (t.small && t.small.url) || img.url;
+}
+
 /* ── 7. LIST VIEW ────────────────────────────────────────────────────── */
 async function showList() {
   var view = document.getElementById('view-list');
@@ -716,9 +737,7 @@ function renderList() {
     var findNo = total - idx;     // newest record gets highest number
     var noStr  = String(findNo).padStart(3, '0');
 
-    var thumbUrl = fields.Image && fields.Image[0] && fields.Image[0].thumbnails && fields.Image[0].thumbnails.small
-      ? fields.Image[0].thumbnails.small.url
-      : null;
+    var thumbUrl = posterThumbUrl(fields);
 
     var thumbHtml = thumbUrl
       ? '<img class="ball-thumb" src="' + escHtml(thumbUrl) + '" alt="' + escHtml(fields.Brand || 'Ball') + '" loading="lazy">'
@@ -1556,10 +1575,9 @@ function favCard(recordId, title, subtitle) {
   var record = findRecord(recordId);
   if (!record) return '';
   var f = record.fields;
-  var thumbUrl = f.Image && f.Image[0] && f.Image[0].thumbnails && f.Image[0].thumbnails.small
-    ? f.Image[0].thumbnails.small.url : null;
+  var thumbUrl = posterThumbUrl(f);
   var thumbHtml = thumbUrl
-    ? '<img class="ball-thumb" src="' + escHtml(thumbUrl) + '" alt="Ball">'
+    ? '<img class="ball-thumb" src="' + escHtml(thumbUrl) + '" alt="Ball" loading="lazy">'
     : '<div class="ball-thumb-placeholder"><span>&#8212;</span></div>';
 
   return '<div class="fav-card" onclick="navigate(\'#detail/' + recordId + '\')">' +
