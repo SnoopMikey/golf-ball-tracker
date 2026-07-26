@@ -14,6 +14,21 @@ var ADMIN_HASH = 'affe69d75e6778ca751245a5e0705e5e29df0735d4947a4f0fa5b217eec669
 
 var CONDITIONS = ['Mint', 'Great', 'Good', 'Fair', 'Worn', 'Destroyed'];
 
+// WMO weather interpretation codes -> plain-English sky, matching the
+// vocabulary used by the historical backfill.
+var WMO_SKY = {
+  0: 'Clear', 1: 'Mainly clear', 2: 'Partly cloudy', 3: 'Overcast',
+  45: 'Foggy', 48: 'Freezing fog',
+  51: 'Light drizzle', 53: 'Drizzle', 55: 'Heavy drizzle',
+  56: 'Freezing drizzle', 57: 'Freezing drizzle',
+  61: 'Light rain', 63: 'Rain', 65: 'Heavy rain',
+  66: 'Freezing rain', 67: 'Freezing rain',
+  71: 'Light snow', 73: 'Snow', 75: 'Heavy snow', 77: 'Snow grains',
+  80: 'Light showers', 81: 'Showers', 82: 'Heavy showers',
+  85: 'Snow showers', 86: 'Snow showers',
+  95: 'Thunderstorm', 96: 'Thunderstorm with hail', 99: 'Thunderstorm with hail'
+};
+
 var TAGLINES = [
   'The internet’s finest collection of found balls.',
   'Yes, they’re all his.',
@@ -164,6 +179,29 @@ async function createComment(fields) {
 
   var data = await resp.json();
   return data.records[0];
+}
+
+// Current conditions at the find, from Open-Meteo (no API key required).
+// Best-effort: a weather failure must never block logging a ball.
+async function fetchCurrentWeather(lat, lng) {
+  var url = 'https://api.open-meteo.com/v1/forecast' +
+    '?latitude=' + encodeURIComponent(lat) +
+    '&longitude=' + encodeURIComponent(lng) +
+    '&current=temperature_2m,relative_humidity_2m,wind_speed_10m,weather_code' +
+    '&temperature_unit=fahrenheit&wind_speed_unit=mph&timezone=auto';
+
+  var resp = await fetch(url);
+  if (!resp.ok) throw new Error('Weather lookup failed (' + resp.status + ')');
+
+  var cur = (await resp.json()).current;
+  if (!cur || cur.temperature_2m == null) throw new Error('No current weather');
+
+  return {
+    Temp:     Math.round(cur.temperature_2m),
+    Humidity: Math.round(cur.relative_humidity_2m),
+    Wind:     Math.round(cur.wind_speed_10m),
+    Sky:      WMO_SKY[cur.weather_code] || 'Unsettled'
+  };
 }
 
 async function deleteRecord(recordId) {
@@ -935,6 +973,36 @@ function metaRow(key, valHtml) {
   '</div>';
 }
 
+function weatherCell(value, label) {
+  return '<div class="weather-cell">' +
+    '<div class="weather-value">' + value + '</div>' +
+    '<div class="weather-label">' + label + '</div>' +
+  '</div>';
+}
+
+function renderWeatherPanel(fields) {
+  var hasAny = fields.Temp != null || fields.Wind != null ||
+               fields.Humidity != null || fields.Sky;
+  if (!hasAny) return '';
+
+  var cells = '';
+  if (fields.Temp != null) {
+    cells += weatherCell(fields.Temp + '<span class="weather-unit">&deg;F</span>', 'Temp');
+  }
+  if (fields.Wind != null) {
+    cells += weatherCell(fields.Wind + '<span class="weather-unit">mph</span>', 'Wind');
+  }
+  if (fields.Humidity != null) {
+    cells += weatherCell(fields.Humidity + '<span class="weather-unit">%</span>', 'Humidity');
+  }
+
+  return '<div class="section-label"><span>Weather Endured</span></div>' +
+    (cells ? '<div class="weather-panel">' + cells + '</div>' : '') +
+    (fields.Sky
+      ? '<div class="weather-sky">&#10086;&ensp;' + escHtml(fields.Sky) + '&ensp;&#10086;</div>'
+      : '');
+}
+
 function renderDetailContent(record, findNo) {
   var fields = record.fields;
   var noStr = String(findNo).padStart(3, '0');
@@ -986,6 +1054,7 @@ function renderDetailContent(record, findNo) {
     '<div id="map-detail"></div>' +
     '<div class="section-label"><span>Particulars</span></div>' +
     '<div class="meta-list">' + rows.join('') + '</div>' +
+    renderWeatherPanel(fields) +
     photosHtml +
     '<p class="kbd-hint">Tip: use the &#8592; &#8594; arrow keys to flip through Mike\'s balls, or through photos when one is open.</p>' +
     renderRateSection(record);
@@ -1154,6 +1223,17 @@ async function submitLog(event) {
     if (brand)     fields.Brand     = brand;
     if (condition) fields.Condition = condition;
 
+    // Stamp the weather Mike endured. Never let this stop the save.
+    try {
+      var weather = await fetchCurrentWeather(state.gpsCoords.lat, state.gpsCoords.lng);
+      fields.Temp     = weather.Temp;
+      fields.Humidity = weather.Humidity;
+      fields.Wind     = weather.Wind;
+      fields.Sky      = weather.Sky;
+    } catch (wErr) {
+      console.error('Weather lookup failed:', wErr);
+    }
+
     var record = await createRecord(fields);
     var recordId = record.id;
 
@@ -1232,6 +1312,10 @@ function renderStatsPage() {
   var latestDate = null;
   var earliestYear = null;
 
+  var skyCounts = {};
+  var temps = [], hums = [];
+  var hottest = null, coldest = null, muggiest = null, windiest = null;
+
   records.forEach(function(r) {
     var f = r.fields;
     if (f.Date) {
@@ -1254,6 +1338,22 @@ function renderStatsPage() {
       var key = f.Brand.trim().toLowerCase();
       if (!brandCounts[key]) brandCounts[key] = { name: f.Brand.trim(), count: 0 };
       brandCounts[key].count++;
+    }
+    if (f.Sky) {
+      var s = f.Sky.trim();
+      skyCounts[s] = (skyCounts[s] || 0) + 1;
+    }
+    if (f.Temp != null) {
+      temps.push(f.Temp);
+      if (!hottest || f.Temp > hottest.fields.Temp) hottest = r;
+      if (!coldest || f.Temp < coldest.fields.Temp) coldest = r;
+    }
+    if (f.Humidity != null) {
+      hums.push(f.Humidity);
+      if (!muggiest || f.Humidity > muggiest.fields.Humidity) muggiest = r;
+    }
+    if (f.Wind != null) {
+      if (!windiest || f.Wind > windiest.fields.Wind) windiest = r;
     }
   });
 
@@ -1366,6 +1466,47 @@ function renderStatsPage() {
       '</div>';
   });
 
+  /* — weather — */
+  var weatherSection = '';
+  if (temps.length) {
+    var avgTemp = Math.round(temps.reduce(function(s, t) { return s + t; }, 0) / temps.length);
+    var avgHum  = hums.length
+      ? Math.round(hums.reduce(function(s, h) { return s + h; }, 0) / hums.length)
+      : null;
+
+    var skies = Object.keys(skyCounts).map(function(k) { return { name: k, count: skyCounts[k] }; });
+    skies.sort(function(a, b) { return b.count - a.count; });
+    var maxSky = skies.length ? skies[0].count : 1;
+    var skyHtml = skies.map(function(s) {
+      return barRow(s.name, s.count, s.count / maxSky * 100, 'bar-sky');
+    }).join('');
+
+    var wRows = [];
+    wRows.push(metaRow('Typical Day',
+      avgTemp + '&deg;F' + (avgHum !== null ? ', ' + avgHum + '% humidity' : '')));
+    if (hottest) {
+      wRows.push(metaRow('Hottest Ball',
+        hottest.fields.Temp + '&deg;F &middot; ' + formatDate(hottest.fields.Date)));
+    }
+    if (coldest) {
+      wRows.push(metaRow('Coldest Ball',
+        coldest.fields.Temp + '&deg;F &middot; ' + formatDate(coldest.fields.Date)));
+    }
+    if (muggiest) {
+      wRows.push(metaRow('Muggiest Ball',
+        muggiest.fields.Humidity + '% &middot; ' + formatDate(muggiest.fields.Date)));
+    }
+    if (windiest) {
+      wRows.push(metaRow('Windiest Ball',
+        windiest.fields.Wind + ' mph &middot; ' + formatDate(windiest.fields.Date)));
+    }
+
+    weatherSection =
+      '<div class="section-label"><span>Weather Endured</span></div>' +
+      '<div class="stats-body">' + skyHtml + '</div>' +
+      '<div class="meta-list">' + wRows.join('') + '</div>';
+  }
+
   /* — fan favorites — */
   var favsHtml = '';
   if (topRatedId) {
@@ -1390,6 +1531,7 @@ function renderStatsPage() {
     '<div class="stats-body">' + brandHtml + '</div>' +
     '<div class="section-label"><span>Monthly Ball Acquisition</span></div>' +
     '<div class="stats-body"><div class="month-chart">' + monthCols + '</div></div>' +
+    weatherSection +
     favsSection +
     '<p class="stats-footer">Mike’s Balls &mdash; every ball personally handled since ' + (earliestYear || yr) + '.<br>All balls verified authentic.</p>';
 }
