@@ -45,6 +45,17 @@ def inline_layout(html):
     def fix(m):
         tag = m.group(0)
         name = m.group(1).lower()
+
+        # A display:block image with a fixed width does not centre under plain
+        # text-align:center. Browsers only centre it in the source because
+        # align="center" on a cell maps to text-align:-webkit-center, which
+        # centres block children too — and Airtable strips that attribute.
+        if name == 'img':
+            s = re.search(r'style="([^"]*)"', tag)
+            if s and 'display:block' in s.group(1) and re.search(r'width:\d+px', s.group(1)):
+                return add_style(tag, 'margin-left:auto;margin-right:auto')
+            return tag
+
         if name not in ('table', 'td', 'th', 'tr'):
             return tag
 

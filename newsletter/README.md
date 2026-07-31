@@ -100,9 +100,14 @@ break a hand-written HTML email:
 It leaves `index.html` alone — that stays readable and is what the web version
 serves. The generated `email.html` sits beside it.
 
-Note that a fixed-width `<table>` is block-level, so `text-align:center` on its
-parent cell will not center it; it needs `margin-left:auto;margin-right:auto`.
-The script adds that automatically.
+**Centering is the subtle one.** Browsers map `align="center"` on a cell to
+`text-align:-webkit-center`, a non-standard value that centers *block-level*
+children too. Plain `text-align:center` does not. So once Airtable strips the
+attribute, anything block-level with a fixed width drifts left — a fixed-width
+`<table>`, and any `display:block` image with a px width (the masthead logo, the
+Ball of the Month photo, the sign-off figure). Both need
+`margin-left:auto;margin-right:auto`, which the script adds automatically.
+Grid images are `width:100%`, so they are unaffected.
 
 To check a build before sending, strip the same attributes Airtable strips and
 render it — if it still looks right, the inline CSS is genuinely carrying the
