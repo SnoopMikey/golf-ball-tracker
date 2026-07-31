@@ -29,9 +29,12 @@ Then:
 1. `cp newsletter/2026-07/index.html newsletter/2026-08/index.html` and rewrite.
 2. Update every image URL to the new month's folder.
 3. Commit and push — **images must be live before the email is sent.**
-4. Add a row to the Airtable `Newsletters` table (`tblwsJW3WxJjG0F7n`) with
-   Issue, Subject, Preheader, HTML, Web Version, and Status = `Ready to Send`.
-5. Mike's automation picks it up from there.
+4. Create a row in the Airtable `Newsletters` table (`tblwsJW3WxJjG0F7n`) with
+   Issue, Subject, Preheader, Web Version and Status = `Ready to Send`.
+5. `python3 scripts/newsletter_publish.py 2026-08` — converts the issue into an
+   email-safe fragment and writes it to that row's HTML field. **Do not paste
+   `index.html` into Airtable directly; it will arrive mangled.** See below.
+6. Mike's automation picks it up from there.
 
 Preview a finished issue the way a recipient sees it:
 
@@ -80,6 +83,30 @@ this month"), and treating lost balls as having had careers.
 - Every stat must come from the data. Do not round a fact into a better joke.
 - Describe only what is actually visible in a photo. If you cannot tell what
   something is, say so or leave it out — do not guess and assert.
+
+## Why there is a publish step
+
+The first July send arrived as a wall of escaped markup. Airtable sanitises
+whatever goes through an automation's email body, and it does three things that
+break a hand-written HTML email:
+
+| What Airtable does | Consequence | Handled by |
+|---|---|---|
+| Turns every **newline** into `<p><span>…</span></p>` | Tables are sliced apart — an opening `<tr>` is auto-closed at end of line and its cells become siblings instead of children | emitting the whole email on **one line** |
+| Escapes `<html>`, `<head>`, `<meta>`, `<title>`, `<body>` and **HTML comments** | They render as literal text the reader sees | sending a **fragment** with comments stripped |
+| Strips `width`, `align`, `valign`, `cellpadding`, `cellspacing`, `border` from `<table>`/`<td>` (but keeps `style`, and keeps `width`/`alt` on `<img>`) | Column widths and centering collapse | rewriting layout attributes as **inline CSS** |
+
+`scripts/newsletter_publish.py` does all three and pushes the result to Airtable.
+It leaves `index.html` alone — that stays readable and is what the web version
+serves. The generated `email.html` sits beside it.
+
+Note that a fixed-width `<table>` is block-level, so `text-align:center` on its
+parent cell will not center it; it needs `margin-left:auto;margin-right:auto`.
+The script adds that automatically.
+
+To check a build before sending, strip the same attributes Airtable strips and
+render it — if it still looks right, the inline CSS is genuinely carrying the
+layout.
 
 ## Technical constraints
 
