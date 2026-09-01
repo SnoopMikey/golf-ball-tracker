@@ -79,10 +79,19 @@ def inline_layout(html):
 
         # A fixed-width table is block-level, so text-align:center on the parent
         # cell will not centre it — it needs auto margins of its own.
+        #
+        # It also needs text-align:left. align="center" on the outer wrapper cell
+        # exists only to centre this table; browsers map it to
+        # text-align:-webkit-center, which centres the block child WITHOUT
+        # dragging every nested paragraph along with it. Plain text-align:center
+        # is a normal inherited value, so once we rewrite the attribute the whole
+        # issue arrives centred. Resetting here stops the inheritance at the body
+        # table; cells carrying their own align="center" still re-centre below.
         if name == 'table' and (
                 (w and not w.group(1).endswith('%')) or
                 re.search(r'style="[^"]*width:\d+px', tag)):
             css.append('margin-left:auto;margin-right:auto')
+            css.append('text-align:left')
 
         return add_style(tag, ';'.join(css))
 
